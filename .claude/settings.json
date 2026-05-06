@@ -37,7 +37,10 @@
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} | redirect: %{redirect_url}\\\\n\" \"https://github.com/avav10985/AquaMind.git/info/refs?service=git-upload-pack\")",
       "Bash(python -m py_compile rpi_gui_monitor.py analysis/dashboard.py analysis/monitor_email.py analysis/daily_report.py analysis/ai_report_email.py)",
       "Bash(python export_conversation.py \"C:/Users/maxbb/.claude/projects/d--------------AquaMind/9a725c90-426c-43d7-80f6-d0de924817a5.jsonl\" \"對話紀錄/對話紀錄_第12部分.md\")",
-      "Bash(python -m py_compile ai_report_email.py daily_report.py monitor_email.py)"
+      "Bash(python -m py_compile ai_report_email.py daily_report.py monitor_email.py)",
+      "WebFetch(domain:aquamind-algae.streamlit.app)",
+      "Read(//c/Users/maxbb/**)",
+      "Bash(python export_conversation.py \"C:/Users/maxbb/.claude/projects/d--------------AquaMind/9a725c90-426c-43d7-80f6-d0de924817a5.jsonl\" \"對話紀錄/對話紀錄_第14部分.md\")"
     ],
     "additionalDirectories": [
       "d:\\藻類比賽\\數據監測程式\\trae_try\\analysis",
