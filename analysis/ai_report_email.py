@@ -38,7 +38,7 @@ from email_helper import send_email, is_configured as email_configured
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MODEL = "gemini-2.5-flash"
-MAX_TOKENS = 1000
+MAX_TOKENS = 4000  # 2.5-flash thinking 會吃 ~1500-2000 token,加上 250 字輸出需要充足緩衝
 
 
 def load_day(target_date):
@@ -114,13 +114,9 @@ def call_gemini(prompt):
     try:
         genai.configure(api_key=API_KEY)
         model = genai.GenerativeModel(MODEL)
-        # thinking_budget=0 關掉 2.5-flash 的內部推理,避免 token 被吃光只剩標題
         response = model.generate_content(
             prompt,
-            generation_config={
-                "max_output_tokens": MAX_TOKENS,
-                "thinking_config": {"thinking_budget": 0},
-            },
+            generation_config={"max_output_tokens": MAX_TOKENS},
         )
         return response.text, response.usage_metadata
     except Exception as e:

@@ -149,13 +149,9 @@ def generate_ai_report(day_df, date):
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.5-flash")
-        # thinking_budget=0 關掉 2.5-flash 內部推理(不關的話 token 會被吃光)
         response = model.generate_content(
             prompt,
-            generation_config={
-                "max_output_tokens": 1000,
-                "thinking_config": {"thinking_budget": 0},
-            },
+            generation_config={"max_output_tokens": 4000},  # 2.5-flash thinking 吃 ~1500-2000
         )
         return response.text, None
     except Exception as e:
