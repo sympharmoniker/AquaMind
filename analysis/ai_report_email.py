@@ -14,7 +14,7 @@ AI 自動寫日報(Gemini API),產生後寄到 email。
     python ai_report_email.py --no-email
 
 模型:
-    預設 gemini-2.0-flash(免費 tier,中文流暢、速度快)
+    預設 gemini-2.5-flash(免費 tier,中文流暢、速度快)
     daily limit 1500 次,日報每天 1 次完全用不完
 
 成本:
@@ -37,7 +37,7 @@ from sensor_codes import DISCONNECT_CODE, NO_DATA_CODES
 from email_helper import send_email, is_configured as email_configured
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash"
 MAX_TOKENS = 600
 
 
