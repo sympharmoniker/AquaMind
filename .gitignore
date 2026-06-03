@@ -14,3 +14,6 @@ Thumbs.db
 # Word / Excel 草稿(本機保留,不進 git)
 *.docx
 *.xlsx
+
+# ML 模型 pickle 檔(各機器各自訓練)
+*.pkl
