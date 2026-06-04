@@ -67,15 +67,20 @@ def classify_light_state(lux):
         return 'MID'
 
 
-def estimate_lux_coefficient(df):
+def estimate_lux_coefficient(df, baseline_window='30min'):
     """從資料估光照-濁度回歸係數 k(假設 濁度_raw ≈ 濁度_real + k * lux)。
 
     作法:
       1. 用 OFF 時段(lx<50 且濁度>0)的濁度當「真實基線」
-      2. 時間插值把基線延伸到 ON 時段
-      3. ON 時段殘差 = 濁度_raw - 基線
-      4. 過原點最小平方擬合:殘差 = k * lux
+      2. **對 OFF 取滾動中位數**過濾攪拌尖刺(真實 high frequency 物理事件)
+         → 留下「兩次攪拌之間的安靜值」當基線
+      3. 時間插值把基線延伸到 ON 時段
+      4. ON 時段殘差 = 濁度_raw - 平滑基線
+      5. 過原點最小平方擬合:殘差 = k * lux
          k = Σ(lux·res) / Σ(lux²)
+
+    參數:
+      baseline_window: OFF 基線滾動視窗大小(預設 30min — 假設攪拌間隔 < 視窗)
 
     回傳:(k, n_used) 或 (None, 0) 樣本不足時。
     """
@@ -92,6 +97,11 @@ def estimate_lux_coefficient(df):
         return None, 0
 
     off_series = df_off.set_index('時間')['濁度(NTU)'].sort_index()
+    # 滾動中位數壓掉攪拌尖刺(min_periods 小一點避免邊緣 NaN)
+    off_series = off_series.rolling(baseline_window, center=True, min_periods=3).median()
+    off_series = off_series.dropna()
+    if len(off_series) < 30:
+        return None, 0
 
     # ON 時段殘差(濁度 > 0 且 ON 狀態,去重)
     on_mask = (df['light_state'] == 'ON') & (df['濁度(NTU)'] > 0) & df['濁度(NTU)'].notna()

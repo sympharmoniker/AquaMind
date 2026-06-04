@@ -562,9 +562,21 @@ with tab5:
     st.markdown(f"### 📈 濁度時序({view_mode})")
     fig1 = go.Figure()
     if use_cleaned:
+        # 細線:校正後完整訊號(含攪拌尖刺等真實物理事件)
         fig1.add_trace(go.Scatter(
             x=view_df_clean.index, y=view_df_clean['濁度(NTU)_cleaned'],
-            name='濁度(已校正)', mode='lines', line=dict(color='#2e8b57', width=2)))
+            name='校正後(含攪拌等真實事件)',
+            mode='lines', line=dict(color='#9bc4a8', width=1), opacity=0.55))
+        # 粗線:藻類基線 — 對校正值取 30 分鐘滾動中位數,壓掉攪拌尖刺
+        bio_baseline = (
+            view_df_clean['濁度(NTU)_cleaned']
+            .rolling('30min', center=True, min_periods=5)
+            .median()
+        )
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=bio_baseline,
+            name='藻類基線(30min 中位數)',
+            mode='lines', line=dict(color='#1f6b3a', width=2.5)))
     else:
         fig1.add_trace(go.Scatter(
             x=view_df_clean.index, y=view_df_clean['濁度(NTU)_raw'],
@@ -577,10 +589,16 @@ with tab5:
     fig1 = add_light_bands(fig1, view_df_clean)
     st.plotly_chart(fig1, use_container_width=True)
 
+    if use_cleaned:
+        st.caption(
+            "💡 細線=校正後完整訊號(攪拌造成的真實尖刺仍保留)、"
+            "粗綠線=30 分鐘滾動中位數,代表「兩次攪拌之間的藻類密度基線」 — "
+            "從 pH 反推每 ~20 分鐘攪拌一次,30 分鐘視窗能穩定濾掉尖刺。"
+        )
     st.caption(
-        "💡 **背景色帶說明**: "
+        "🎨 **背景色帶**:"
         "🌑 深色=關燈時段(濁度乾淨)、"
-        "💡 黃色=開燈時段(濁度受光干擾)、"
+        "💡 黃色=開燈時段(已扣光照偏移)、"
         "🟥 紅色=感測器掉了/故障"
     )
 
