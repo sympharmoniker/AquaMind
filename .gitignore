@@ -15,5 +15,10 @@ Thumbs.db
 *.docx
 *.xlsx
 
-# ML 模型 pickle 檔(各機器各自訓練)
+# ML 模型 pickle 檔(各機器各自訓練,但 dashboard 用的 anomaly_model.pkl 例外推進 git)
 *.pkl
+!analysis/anomaly_model.pkl
+
+# 本機測試資料夾(下載 CSV 用,不進 git)
+第二次數據測試*/
+測試資料/

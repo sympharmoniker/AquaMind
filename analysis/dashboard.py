@@ -20,8 +20,11 @@ Google Sheet CSV URL 怎麼拿:
     把網址 /edit?... 換成 /export?format=csv
 """
 import os
+import pickle
+from pathlib import Path
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
@@ -225,7 +228,9 @@ with st.sidebar:
 
 
 # ============ 標籤頁 ============
-tab1, tab2, tab3, tab4 = st.tabs(["📊 即時數據", "📈 歷史趨勢", "⚠️ 異常分析", "🤖 AI 日報"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 即時數據", "📈 歷史趨勢", "⚠️ 異常分析", "🤖 AI 日報", "🧠 邊緣 AI",
+])
 
 
 # ---------- Tab 1: 即時數據 ----------
@@ -395,6 +400,250 @@ with tab4:
                     file_name=f"ai_report_{selected_date}.md",
                     mime="text/markdown",
                 )
+
+
+# ---------- Tab 5: 邊緣 AI ----------
+LIGHT_OFF_MAX = 50
+LIGHT_ON_MIN = 1500
+MODEL_FILE = Path(__file__).parent / 'anomaly_model.pkl'
+
+
+def classify_light_state_dashboard(lux):
+    if pd.isna(lux):
+        return 'MID'
+    if lux < LIGHT_OFF_MAX:
+        return 'OFF'
+    elif lux > LIGHT_ON_MIN:
+        return 'ON'
+    else:
+        return 'MID'
+
+
+def clean_for_dashboard(df_in):
+    """跟 edge_ai 同步的清理:濁度=0 視為 NaN、MID 整列濁度 NaN、時間插值補回"""
+    out = df_in.copy()
+    out['光照(lx)'] = pd.to_numeric(out['光照(lx)'], errors='coerce')
+    out['light_state'] = out['光照(lx)'].apply(classify_light_state_dashboard)
+    out['濁度(NTU)_raw'] = pd.to_numeric(out['濁度(NTU)'], errors='coerce')
+    bad = (out['濁度(NTU)_raw'] == 0) | (out['light_state'] == 'MID')
+    out['濁度(NTU)_cleaned'] = out['濁度(NTU)_raw'].where(~bad, np.nan)
+    # 時間插值(out 的 index 應該是時間欄)
+    if isinstance(out.index, pd.DatetimeIndex):
+        out['濁度(NTU)_cleaned'] = out['濁度(NTU)_cleaned'].interpolate(method='time').ffill().bfill()
+    return out
+
+
+@st.cache_resource
+def load_anomaly_model():
+    """讀模型 pickle(streamlit 會把模型快取在記憶體,不會每次刷新都重讀)"""
+    if not MODEL_FILE.exists():
+        return None
+    try:
+        with open(MODEL_FILE, 'rb') as f:
+            return pickle.load(f)
+    except Exception as e:
+        st.error(f"模型載入失敗:{e}")
+        return None
+
+
+def add_light_bands(fig, df_with_state):
+    """在 plotly 圖表上加入光照狀態色帶"""
+    # 找連續同 state 的區段
+    states = df_with_state['light_state'].fillna('MID')
+    state_color = {'OFF': 'rgba(50,50,80,0.18)', 'ON': 'rgba(250,210,80,0.12)',
+                   'MID': 'rgba(220,80,80,0.18)'}
+    prev_state = states.iloc[0]
+    seg_start = df_with_state.index[0]
+    for ts, s in zip(df_with_state.index[1:], states.iloc[1:]):
+        if s != prev_state:
+            fig.add_vrect(x0=seg_start, x1=ts, fillcolor=state_color[prev_state],
+                          opacity=0.6, layer='below', line_width=0)
+            seg_start = ts
+            prev_state = s
+    fig.add_vrect(x0=seg_start, x1=df_with_state.index[-1],
+                  fillcolor=state_color[prev_state], opacity=0.6, layer='below', line_width=0)
+    return fig
+
+
+with tab5:
+    st.subheader("🧠 邊緣 AI 異常檢測 + 趨勢分析")
+    st.caption("IsolationForest 無監督學習 + 光照感知資料校正 — 完全本地運算,無雲端 API 依賴")
+
+    artifact = load_anomaly_model()
+    if artifact is None:
+        st.warning(f"⚠ 找不到模型檔 `{MODEL_FILE.name}`,請先在開發機跑 `edge_ai.py train ...`")
+        st.stop()
+
+    model = artifact['model']
+    scaler = artifact['scaler']
+    cols_model = artifact['cols']
+
+    # 顯示模型 metadata
+    info_cols = st.columns(3)
+    info_cols[0].metric("訓練樣本數", f"{artifact.get('n_samples', '?'):,}")
+    info_cols[1].metric("訓練於", artifact.get('trained_at', '?')[:10])
+    info_cols[2].metric("使用感測器", len(cols_model))
+
+    st.divider()
+
+    # 視圖切換
+    view_mode = st.radio(
+        "資料模式",
+        ["📊 原始資料(含光照干擾)", "🔧 處理過資料(去除干擾)"],
+        horizontal=True,
+    )
+    use_cleaned = view_mode.startswith("🔧")
+
+    # 取近一段時間做分析
+    hours_window = st.slider("分析窗口(小時)", 6, 168, 48)
+    cutoff = df.index.max() - pd.Timedelta(hours=hours_window)
+    view_df = df[df.index >= cutoff].copy()
+
+    if view_df.empty:
+        st.warning("選擇的時段內沒有資料")
+        st.stop()
+
+    # 清理(加上 light_state 等欄位,即使原始視圖也需要 light_state 上色)
+    view_df_clean = clean_for_dashboard(view_df)
+
+    # 決定餵給模型的濁度
+    if use_cleaned:
+        view_df_clean['濁度(NTU)_for_model'] = view_df_clean['濁度(NTU)_cleaned']
+    else:
+        view_df_clean['濁度(NTU)_for_model'] = view_df_clean['濁度(NTU)_raw']
+
+    # 建構特徵矩陣
+    X = pd.DataFrame()
+    for c in cols_model:
+        if c == '濁度(NTU)':
+            s = view_df_clean['濁度(NTU)_for_model']
+        else:
+            s = pd.to_numeric(view_df_clean[c], errors='coerce')
+            s = s.where(~s.isin(NO_DATA_CODES))
+        X[c] = s
+    X = X.fillna(X.median())
+
+    # 推論
+    X_scaled = scaler.transform(X.values)
+    scores = model.score_samples(X_scaled)
+    preds = model.predict(X_scaled)
+    n_anomaly = int((preds == -1).sum())
+    view_df_clean['anomaly_score'] = scores
+
+    # KPI cards
+    st.markdown("### 📊 異常檢測結果")
+    kpi = st.columns(4)
+    kpi[0].metric("檢查筆數", f"{len(view_df_clean):,}")
+    kpi[1].metric("異常筆數", n_anomaly, delta=f"{n_anomaly/len(view_df_clean)*100:.1f}%")
+    kpi[2].metric("最低分數", f"{scores.min():.3f}", help="越低越異常")
+    if n_anomaly > 0:
+        worst_idx = int(np.argmin(scores))
+        worst_time = view_df_clean.index[worst_idx]
+        kpi[3].metric("最異常時刻", worst_time.strftime("%m-%d %H:%M"))
+
+    # 圖 1:濁度時序圖(原始 vs 處理),色帶標 OFF/ON/MID
+    st.markdown(f"### 📈 濁度時序({view_mode})")
+    fig1 = go.Figure()
+    if use_cleaned:
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=view_df_clean['濁度(NTU)_cleaned'],
+            name='濁度(已校正)', mode='lines', line=dict(color='#2e8b57', width=2)))
+    else:
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=view_df_clean['濁度(NTU)_raw'],
+            name='濁度(原始)', mode='lines', line=dict(color='#888', width=1.5)))
+    fig1.update_layout(
+        height=340, showlegend=True,
+        margin=dict(t=20, b=10),
+        xaxis_title='時間', yaxis_title='濁度 (NTU)',
+    )
+    fig1 = add_light_bands(fig1, view_df_clean)
+    st.plotly_chart(fig1, use_container_width=True)
+
+    st.caption(
+        "💡 **背景色帶說明**: "
+        "🌑 深色=關燈時段(濁度乾淨)、"
+        "💡 黃色=開燈時段(濁度受光干擾)、"
+        "🟥 紅色=感測器掉了/故障"
+    )
+
+    # 圖 2:異常分數時序圖
+    st.markdown("### 🎯 AI 異常分數")
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=view_df_clean.index, y=view_df_clean['anomaly_score'],
+        name='異常分數', mode='lines', line=dict(color='crimson', width=1.5)))
+    # 異常閾值線(IsolationForest contamination 預設)
+    fig2.add_hline(y=-0.5, line_dash='dash', line_color='red',
+                   annotation_text='異常閾值', annotation_position='right')
+    fig2.update_layout(height=280, showlegend=False, margin=dict(t=20, b=10),
+                       xaxis_title='時間', yaxis_title='分數(越低越異常)')
+    fig2 = add_light_bands(fig2, view_df_clean)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # 最異常時刻明細
+    if n_anomaly > 0:
+        st.markdown("### 🔍 最異常時刻細節")
+        worst_idx = int(np.argmin(scores))
+        worst_row = view_df_clean.iloc[worst_idx]
+        worst_x = X.iloc[worst_idx].values
+        worst_scaled = scaler.transform(worst_x.reshape(1, -1))[0]
+
+        detail = []
+        for i, c in enumerate(cols_model):
+            detail.append({
+                '感測器': c,
+                '當下讀值': f"{worst_x[i]:.2f}",
+                'Z-score': worst_scaled[i],
+                '|Z|': abs(worst_scaled[i]),
+            })
+        detail_df = pd.DataFrame(detail).sort_values('|Z|', ascending=False).reset_index(drop=True)
+        detail_df['偏差方向'] = detail_df['Z-score'].apply(
+            lambda z: '⬆ 偏高' if z > 0.5 else ('⬇ 偏低' if z < -0.5 else '✓ 正常'))
+        detail_df['Z-score'] = detail_df['Z-score'].round(2)
+        st.dataframe(
+            detail_df[['感測器', '當下讀值', 'Z-score', '偏差方向']],
+            use_container_width=True, hide_index=True)
+        st.caption(f"時間:`{worst_row.name}` · 異常分數:`{scores[worst_idx]:.3f}`")
+
+    # 趨勢預測
+    st.divider()
+    st.markdown("### 🔮 未來 24 小時趨勢預測")
+    st.caption("線性外推 — 簡單邊緣運算,即時可算")
+    forecast_rows = []
+    for c in cols_model:
+        if c == '濁度(NTU)' and use_cleaned:
+            s = view_df_clean['濁度(NTU)_cleaned'].dropna()
+        elif c == '濁度(NTU)':
+            s = view_df_clean['濁度(NTU)_raw'].dropna()
+        else:
+            s = pd.to_numeric(view_df_clean[c], errors='coerce')
+            s = s[~s.isin(NO_DATA_CODES)].dropna()
+        if len(s) < 10:
+            continue
+        # 取最後 24 小時
+        cutoff_t = s.index.max() - pd.Timedelta(hours=24)
+        s_recent = s[s.index >= cutoff_t]
+        if len(s_recent) < 10:
+            continue
+        t = np.arange(len(s_recent))
+        y = s_recent.values
+        slope, intercept = np.polyfit(t, y, 1)
+        rate_hr = slope * (len(s_recent) / 24)
+        current = float(y[-1])
+        future = float(slope * (len(s_recent) + 24 * len(s_recent) / 24) + intercept)
+        change = future - current
+        arrow = '↗' if rate_hr > 0.01 else ('↘' if rate_hr < -0.01 else '→')
+        forecast_rows.append({
+            '感測器': c,
+            '目前': round(current, 2),
+            '/hr 速率': round(rate_hr, 4),
+            '24h 後': round(future, 2),
+            '變化': round(change, 2),
+            '趨勢': arrow,
+        })
+    if forecast_rows:
+        st.dataframe(pd.DataFrame(forecast_rows), use_container_width=True, hide_index=True)
 
 
 # ============ 頁尾 ============

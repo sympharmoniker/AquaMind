@@ -47,6 +47,61 @@ NO_DATA_CODES = {-1, -2, -3}
 # 模型存放位置(與本檔同目錄)
 MODEL_PATH = Path(__file__).parent / 'anomaly_model.pkl'
 
+# 光照狀態判斷閾值(根據實測資料)
+# OFF(<50):刻意關燈時段,濁度乾淨
+# ON(>1500):刻意開燈時段,濁度受光干擾
+# MID(50-1500):光照感測器掉了 / 故障,該時段所有讀值不可信
+LIGHT_OFF_MAX = 50
+LIGHT_ON_MIN = 1500
+
+
+def classify_light_state(lux):
+    """根據光照數值分類:OFF / ON / MID"""
+    if pd.isna(lux):
+        return 'MID'
+    if lux < LIGHT_OFF_MAX:
+        return 'OFF'
+    elif lux > LIGHT_ON_MIN:
+        return 'ON'
+    else:
+        return 'MID'
+
+
+def clean_dataframe(df):
+    """資料清理 — 處理光照狀態 + 濁度修補。
+
+    規則:
+      1. 加入 light_state 欄(OFF / ON / MID)
+      2. 濁度 == 0 → NaN(使用者規則:濁度不可能是 0)
+      3. light_state == MID 的整列濁度 → NaN(感測器掉了該時段全可疑)
+      4. 用時間插值補回濁度的 NaN(用相鄰 OFF 時段的真實值連起來)
+
+    回傳:複製過的 df,多 'light_state' 跟 '濁度_cleaned' 兩欄。
+    """
+    df = df.copy()
+    df['時間'] = pd.to_datetime(df['時間'], errors='coerce')
+    df = df.dropna(subset=['時間']).sort_values('時間').reset_index(drop=True)
+
+    # 光照狀態分類
+    df['光照(lx)'] = pd.to_numeric(df['光照(lx)'], errors='coerce')
+    df['light_state'] = df['光照(lx)'].apply(classify_light_state)
+
+    # 處理濁度
+    df['濁度(NTU)'] = pd.to_numeric(df['濁度(NTU)'], errors='coerce')
+
+    # 標記要清除的(NaN 化)
+    bad_mask = (df['濁度(NTU)'] == 0) | (df['light_state'] == 'MID')
+    df['濁度_cleaned'] = df['濁度(NTU)'].where(~bad_mask, np.nan)
+
+    # 用時間做插值(連 OFF 時段真實值跨過 ON 假 0)
+    df_idx = df.set_index('時間')
+    df_idx['濁度_cleaned'] = df_idx['濁度_cleaned'].interpolate(method='time')
+    # 前後若仍 NaN(資料最頭尾),前後填補
+    df_idx['濁度_cleaned'] = df_idx['濁度_cleaned'].ffill().bfill()
+    df = df_idx.reset_index()
+
+    return df
+
 
 def load_csv(path):
     """讀單一 CSV"""
@@ -77,13 +132,28 @@ def prepare_features(df):
 
 
 def train_anomaly(csv_paths, contamination=0.05):
-    """訓練 IsolationForest 異常檢測模型"""
+    """訓練 IsolationForest 異常檢測模型(用清理過的資料)"""
     print("=== 訓練異常檢測模型(IsolationForest)===\n")
     print("資料來源:")
     df = load_and_combine(csv_paths)
 
-    X, cols = prepare_features(df)
-    print(f"\n合併後資料:{len(X):,} 筆 × {len(cols)} 維")
+    # 資料清理
+    df = clean_dataframe(df)
+    n_total = len(df)
+
+    # 排除 MID 時段(感測器掉了的整段不可信)
+    df_train = df[df['light_state'] != 'MID'].copy()
+    n_mid_excluded = n_total - len(df_train)
+    print(f"\n資料清理:")
+    print(f"  總筆數          : {n_total:,}")
+    print(f"  排除 MID 時段   : {n_mid_excluded:,}(光照感測器中間值,疑似掉落)")
+    print(f"  剩下訓練樣本    : {len(df_train):,}")
+
+    # 把原始濁度替換為清理過的(去掉 0 值並插值)
+    df_train['濁度(NTU)'] = df_train['濁度_cleaned']
+
+    X, cols = prepare_features(df_train)
+    print(f"\n訓練資料維度:{len(X):,} 筆 × {len(cols)} 維")
     print(f"特徵欄位:{cols}\n")
 
     # 標準化(IsolationForest 對 scale 敏感)
