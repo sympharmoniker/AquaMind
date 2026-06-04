@@ -19,8 +19,36 @@ v2 行為:
 要從頭重新匯出:刪掉 sidecar 的 state 檔(`<output>.state.json`)即可。
 """
 import json
+import re
 import sys
 from pathlib import Path
+
+
+# 隱私遮罩規則 — 寫入 markdown 前一律套用,擋掉敏感字串外洩
+# 規則來源:CLAUDE.md 第 6 條(隱私資料保護,最高優先級)
+REDACT_PATTERNS = [
+    # Gemini / Google AI Studio API key
+    (re.compile(r'AIzaSy[A-Za-z0-9_-]{30,}'), '[REDACTED-GEMINI-API-KEY]'),
+    # Anthropic / OpenAI 風格 API key
+    (re.compile(r'sk-(?:ant-)?[A-Za-z0-9_-]{20,}'), '[REDACTED-API-KEY]'),
+    # AWS access key
+    (re.compile(r'AKIA[A-Z0-9]{16}'), '[REDACTED-AWS-KEY]'),
+    # Google Apps Script Web app URL
+    (re.compile(r'https?://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec'), '[REDACTED-APPS-SCRIPT-URL]'),
+    # Google Sheet URL(含 ID)
+    (re.compile(r'https?://docs\.google\.com/spreadsheets/d/[A-Za-z0-9_-]+(?:/[^\s)]*)?'), '[REDACTED-SHEET-URL]'),
+    # 使用者 email(包含本人)
+    (re.compile(r'aaron90407@gmail\.com', re.IGNORECASE), '[REDACTED-EMAIL]'),
+]
+
+
+def redact(text):
+    """套用所有遮罩規則,把敏感字串換成 [REDACTED-XXX] 標籤。"""
+    if not text:
+        return text
+    for pat, mask in REDACT_PATTERNS:
+        text = pat.sub(mask, text)
+    return text
 
 
 def extract_text(content):
@@ -68,6 +96,7 @@ def format_message(entry):
     msg = entry.get("message", {})
     content = msg.get("content", "") if isinstance(msg, dict) else ""
     text = extract_text(content)
+    text = redact(text)  # 寫入前先擋敏感字串
 
     if not text.strip():
         return None
