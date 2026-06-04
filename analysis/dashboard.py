@@ -419,14 +419,25 @@ def classify_light_state_dashboard(lux):
         return 'MID'
 
 
-def clean_for_dashboard(df_in):
-    """跟 edge_ai 同步的清理:濁度=0 視為 NaN、MID 整列濁度 NaN、時間插值補回"""
+def clean_for_dashboard(df_in, lux_k=0.0):
+    """跟 edge_ai.clean_dataframe 同步的清理(光照回歸校正版)。
+
+    用模型訓練時存的 lux_k:濁度_cleaned = 濁度_raw - k * lux,clip 到 >= 0。
+    濁度=0 / NaN / MID → NaN(感測器不可信),再用時間插值補回。
+    """
     out = df_in.copy()
     out['光照(lx)'] = pd.to_numeric(out['光照(lx)'], errors='coerce')
     out['light_state'] = out['光照(lx)'].apply(classify_light_state_dashboard)
     out['濁度(NTU)_raw'] = pd.to_numeric(out['濁度(NTU)'], errors='coerce')
-    bad = (out['濁度(NTU)_raw'] == 0) | (out['light_state'] == 'MID')
-    out['濁度(NTU)_cleaned'] = out['濁度(NTU)_raw'].where(~bad, np.nan)
+
+    # 光照回歸校正
+    lux_filled = out['光照(lx)'].fillna(0)
+    corrected = out['濁度(NTU)_raw'] - float(lux_k) * lux_filled
+
+    # 標壞點 → NaN
+    bad = (out['濁度(NTU)_raw'] == 0) | out['濁度(NTU)_raw'].isna() | (out['light_state'] == 'MID')
+    out['濁度(NTU)_cleaned'] = corrected.where(~bad, np.nan).clip(lower=0)
+
     # 時間插值(out 的 index 應該是時間欄)
     if isinstance(out.index, pd.DatetimeIndex):
         out['濁度(NTU)_cleaned'] = out['濁度(NTU)_cleaned'].interpolate(method='time').ffill().bfill()
@@ -477,12 +488,18 @@ with tab5:
     model = artifact['model']
     scaler = artifact['scaler']
     cols_model = artifact['cols']
+    lux_k = float(artifact.get('lux_k', 0.0))
 
     # 顯示模型 metadata
-    info_cols = st.columns(3)
+    info_cols = st.columns(4)
     info_cols[0].metric("訓練樣本數", f"{artifact.get('n_samples', '?'):,}")
     info_cols[1].metric("訓練於", artifact.get('trained_at', '?')[:10])
     info_cols[2].metric("使用感測器", len(cols_model))
+    info_cols[3].metric(
+        "光照校正係數 k",
+        f"{lux_k:+.5f}",
+        help=f"濁度_校正 = 濁度_原始 − k × 光照(lx)。開燈 lux=2000 時校正量 {-lux_k*2000:+.1f} NTU",
+    )
 
     st.divider()
 
@@ -503,8 +520,8 @@ with tab5:
         st.warning("選擇的時段內沒有資料")
         st.stop()
 
-    # 清理(加上 light_state 等欄位,即使原始視圖也需要 light_state 上色)
-    view_df_clean = clean_for_dashboard(view_df)
+    # 清理(用模型訓練時的 lux_k 校正,跟訓練分布一致)
+    view_df_clean = clean_for_dashboard(view_df, lux_k=lux_k)
 
     # 決定餵給模型的濁度
     if use_cleaned:

@@ -67,16 +67,78 @@ def classify_light_state(lux):
         return 'MID'
 
 
-def clean_dataframe(df):
-    """資料清理 — 處理光照狀態 + 濁度修補。
+def estimate_lux_coefficient(df):
+    """從資料估光照-濁度回歸係數 k(假設 濁度_raw ≈ 濁度_real + k * lux)。
+
+    作法:
+      1. 用 OFF 時段(lx<50 且濁度>0)的濁度當「真實基線」
+      2. 時間插值把基線延伸到 ON 時段
+      3. ON 時段殘差 = 濁度_raw - 基線
+      4. 過原點最小平方擬合:殘差 = k * lux
+         k = Σ(lux·res) / Σ(lux²)
+
+    回傳:(k, n_used) 或 (None, 0) 樣本不足時。
+    """
+    if '光照(lx)' not in df.columns or '濁度(NTU)' not in df.columns:
+        return None, 0
+    if 'light_state' not in df.columns:
+        return None, 0
+
+    # OFF 基線(濁度 > 0 且 OFF 狀態,去重)
+    off_mask = (df['light_state'] == 'OFF') & (df['濁度(NTU)'] > 0) & df['濁度(NTU)'].notna()
+    df_off = df.loc[off_mask, ['時間', '濁度(NTU)']].dropna()
+    df_off = df_off.groupby('時間', as_index=False).mean()
+    if len(df_off) < 30:
+        return None, 0
+
+    off_series = df_off.set_index('時間')['濁度(NTU)'].sort_index()
+
+    # ON 時段殘差(濁度 > 0 且 ON 狀態,去重)
+    on_mask = (df['light_state'] == 'ON') & (df['濁度(NTU)'] > 0) & df['濁度(NTU)'].notna()
+    df_on = df.loc[on_mask, ['時間', '濁度(NTU)', '光照(lx)']].dropna()
+    df_on = df_on.groupby('時間', as_index=False).mean()
+    if len(df_on) < 30:
+        return None, 0
+
+    # 把 OFF 基線插值到 ON 時間點上
+    union_idx = off_series.index.union(pd.DatetimeIndex(df_on['時間']))
+    baseline_full = off_series.reindex(union_idx).sort_index()
+    baseline_full = baseline_full.interpolate(method='time')
+    baseline_on = baseline_full.reindex(pd.DatetimeIndex(df_on['時間']))
+
+    df_on = df_on.set_index('時間')
+    df_on['baseline'] = baseline_on.values
+    df_on['residual'] = df_on['濁度(NTU)'] - df_on['baseline']
+    df_on = df_on.dropna()
+
+    if len(df_on) < 30:
+        return None, 0
+
+    lux = df_on['光照(lx)'].values.astype(float)
+    res = df_on['residual'].values.astype(float)
+
+    denom = float(np.sum(lux * lux))
+    if denom == 0:
+        return None, 0
+
+    k = float(np.sum(lux * res) / denom)
+    return k, len(df_on)
+
+
+def clean_dataframe(df, lux_k=None):
+    """資料清理 — 光照回歸校正 + 濁度修補。
 
     規則:
-      1. 加入 light_state 欄(OFF / ON / MID)
-      2. 濁度 == 0 → NaN(使用者規則:濁度不可能是 0)
-      3. light_state == MID 的整列濁度 → NaN(感測器掉了該時段全可疑)
-      4. 用時間插值補回濁度的 NaN(用相鄰 OFF 時段的真實值連起來)
+      1. 加 light_state 欄(OFF / ON / MID)
+      2. 估光照係數 k(訓練時),或用傳入的 k(推論時)
+      3. 濁度校正:濁度_cleaned = 濁度_raw - k * lux,clip 到 >= 0
+      4. 濁度 == 0 / NaN / MID 整段 → NaN(這些點不可信)
+      5. 殘存 NaN 用時間插值補回(連 OFF/ON 校正後的真實值)
 
-    回傳:複製過的 df,多 'light_state' 跟 '濁度_cleaned' 兩欄。
+    參數:
+      lux_k: None 表示自動估;float 則直接套用(讓 dashboard 用訓練好的 k)
+
+    回傳:複製過的 df,多 'light_state'、'濁度_cleaned'、'lux_k_used' 三欄。
     """
     df = df.copy()
     df['時間'] = pd.to_datetime(df['時間'], errors='coerce')
@@ -89,15 +151,38 @@ def clean_dataframe(df):
     # 處理濁度
     df['濁度(NTU)'] = pd.to_numeric(df['濁度(NTU)'], errors='coerce')
 
-    # 標記要清除的(NaN 化)
-    bad_mask = (df['濁度(NTU)'] == 0) | (df['light_state'] == 'MID')
-    df['濁度_cleaned'] = df['濁度(NTU)'].where(~bad_mask, np.nan)
+    # 估或套用光照係數
+    if lux_k is None:
+        k, n_used = estimate_lux_coefficient(df)
+        if k is None:
+            k = 0.0
+            print(f"  [警告] OFF/ON 樣本不足,無法估光照係數,跳過校正")
+        else:
+            print(f"  光照校正係數 k = {k:.5f}(用 {n_used:,} 筆 ON 點擬合)")
+            print(f"  → 開燈 lux=2000 時,濁度讀值被偏移 {k*2000:+.2f} NTU,會被扣回去")
+    else:
+        k = float(lux_k)
 
-    # 用時間做插值(連 OFF 時段真實值跨過 ON 假 0)
+    df['lux_k_used'] = k
+
+    # 光照回歸校正:濁度_cleaned = 濁度_raw - k * lux
+    lux_filled = df['光照(lx)'].fillna(0)
+    corrected = df['濁度(NTU)'] - k * lux_filled
+
+    # 標壞點 → NaN(這些點即使校正了也不可信)
+    bad_mask = (
+        (df['濁度(NTU)'] == 0)
+        | df['濁度(NTU)'].isna()
+        | (df['light_state'] == 'MID')
+    )
+    df['濁度_cleaned'] = corrected.where(~bad_mask, np.nan)
+
+    # 濁度物理上 >= 0
+    df['濁度_cleaned'] = df['濁度_cleaned'].clip(lower=0)
+
+    # 殘存 NaN 用時間插值補
     df_idx = df.set_index('時間')
-    df_idx['濁度_cleaned'] = df_idx['濁度_cleaned'].interpolate(method='time')
-    # 前後若仍 NaN(資料最頭尾),前後填補
-    df_idx['濁度_cleaned'] = df_idx['濁度_cleaned'].ffill().bfill()
+    df_idx['濁度_cleaned'] = df_idx['濁度_cleaned'].interpolate(method='time').ffill().bfill()
     df = df_idx.reset_index()
 
     return df
@@ -137,8 +222,9 @@ def train_anomaly(csv_paths, contamination=0.05):
     print("資料來源:")
     df = load_and_combine(csv_paths)
 
-    # 資料清理
+    # 資料清理(訓練模式:自動估光照係數 k)
     df = clean_dataframe(df)
+    lux_k = float(df['lux_k_used'].iloc[0]) if 'lux_k_used' in df.columns and len(df) > 0 else 0.0
     n_total = len(df)
 
     # 排除 MID 時段(感測器掉了的整段不可信)
@@ -190,6 +276,7 @@ def train_anomaly(csv_paths, contamination=0.05):
         'n_samples': len(X),
         'sources': [Path(p).name for p in csv_paths],
         'contamination': contamination,
+        'lux_k': lux_k,
     }
     with open(MODEL_PATH, 'wb') as f:
         pickle.dump(artifact, f)
