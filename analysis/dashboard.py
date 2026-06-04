@@ -562,17 +562,38 @@ with tab5:
     st.markdown(f"### 📈 濁度時序({view_mode})")
     fig1 = go.Figure()
     if use_cleaned:
-        # 細線:校正後完整訊號(含攪拌尖刺等真實物理事件)
-        fig1.add_trace(go.Scatter(
-            x=view_df_clean.index, y=view_df_clean['濁度(NTU)_cleaned'],
-            name='校正後(含攪拌等真實事件)',
-            mode='lines', line=dict(color='#9bc4a8', width=1), opacity=0.55))
-        # 粗線:藻類基線 — 對校正值取 30 分鐘滾動中位數,壓掉攪拌尖刺
+        # 藻類基線 — 對校正值取 30 分鐘滾動中位數,壓掉攪拌尖刺
         bio_baseline = (
             view_df_clean['濁度(NTU)_cleaned']
             .rolling('30min', center=True, min_periods=5)
             .median()
         )
+        # ON 期間 SEN0189 接近飽和,基線不確定度高 — 用 1h 滾動 std 當誤差帶半徑
+        on_mask = view_df_clean['light_state'] == 'ON'
+        on_only = view_df_clean['濁度(NTU)_cleaned'].where(on_mask)
+        band_radius = on_only.rolling('1h', center=True, min_periods=10).std()
+        band_radius = band_radius.where(on_mask, np.nan)
+        upper = (bio_baseline + band_radius).where(on_mask, np.nan)
+        lower = (bio_baseline - band_radius).clip(lower=0).where(on_mask, np.nan)
+
+        # 1. 上邊界(透明線,只用來定 fill 起點)
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=upper,
+            mode='lines', line=dict(width=0),
+            showlegend=False, hoverinfo='skip'))
+        # 2. 下邊界 + 填色到上邊界
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=lower,
+            mode='lines', line=dict(width=0),
+            fill='tonexty', fillcolor='rgba(46, 139, 87, 0.18)',
+            name='ON 不確定區(感測器飽和)',
+            hoverinfo='skip'))
+        # 3. 細線:校正後完整訊號(含攪拌尖刺等真實物理事件)
+        fig1.add_trace(go.Scatter(
+            x=view_df_clean.index, y=view_df_clean['濁度(NTU)_cleaned'],
+            name='校正後(含攪拌等真實事件)',
+            mode='lines', line=dict(color='#9bc4a8', width=1), opacity=0.55))
+        # 4. 粗線:藻類基線
         fig1.add_trace(go.Scatter(
             x=view_df_clean.index, y=bio_baseline,
             name='藻類基線(30min 中位數)',
@@ -591,9 +612,9 @@ with tab5:
 
     if use_cleaned:
         st.caption(
-            "💡 細線=校正後完整訊號(攪拌造成的真實尖刺仍保留)、"
-            "粗綠線=30 分鐘滾動中位數,代表「兩次攪拌之間的藻類密度基線」 — "
-            "從 pH 反推每 ~20 分鐘攪拌一次,30 分鐘視窗能穩定濾掉尖刺。"
+            "💡 細線=校正後完整訊號(攪拌真實尖刺保留)、粗深綠線=30 分鐘滾動中位數藻類基線、"
+            "**綠色陰影=ON 不確定區**(SEN0189 強光下接近飽和,只剩 0-56 NTU 原始讀值 → "
+            "校正只能加固定偏移,救不回被光抹掉的細節,基線在陰影範圍內都算可能值)。"
         )
     st.caption(
         "🎨 **背景色帶**:"
