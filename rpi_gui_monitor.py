@@ -16,6 +16,8 @@ CSV_FILE = os.path.join(DESKTOP_PATH, "algae_monitor_data.csv")
 BAUD_RATE = 9600
 BUFFER_SIZE = 20  # 每累積 20 筆數據寫入一次 SD 卡
 FLUSH_INTERVAL = 60  # 即使數據不夠，每 60 秒也強制寫入一次
+# 上次成功上傳到 Sheet 的時間戳(用來做斷點補傳)
+LAST_UPLOADED_FILE = os.path.join(DESKTOP_PATH, ".last_uploaded_ts")
 
 # Google Apps Script Web app URL — 從 cloud_url.txt 讀(該檔在 .gitignore,git 不追蹤)
 # 在每台機器(Windows 開發機 / Pi)各自建立 cloud_url.txt,內容就一行完整 URL
@@ -50,7 +52,13 @@ class AlgaeMonitorApp:
         self.data_buffer = []
         self.buffer_lock = threading.Lock()
         self.last_flush_time = time.time()
-        
+
+        # 雲端斷點補傳機制
+        self._backfill_running = False
+        self._ts_lock = threading.Lock()
+        # 監聽 cloud_sync checkbox 變化:OFF→ON 觸發補傳
+        self.cloud_sync.trace_add("write", self._on_cloud_sync_changed)
+
         self.setup_ui()
         self.start_serial_threads()
         self.start_timer_thread()
@@ -125,14 +133,17 @@ class AlgaeMonitorApp:
                         self.flush_buffer()
         threading.Thread(target=timer_loop, daemon=True).start()
 
-    def sync_to_cloud(self, device_id, values_dict):
-        """背景傳送完整數據包到 Google Sheets"""
+    def sync_to_cloud(self, device_id, values_dict, ts):
+        """背景傳送完整數據包到 Google Sheets。
+        ts: 量測時間戳字串(會送進 Apps Script 讓 Sheet 用真實時間,不是上傳時間)
+        """
         if not self.cloud_sync.get() or not CLOUD_URL:
             return
-            
+
         def task():
             try:
                 payload = {
+                    "ts": ts,
                     "device_id": device_id,
                     "temp": values_dict.get('t'),
                     "ph": values_dict.get('ph'),
@@ -150,13 +161,131 @@ class AlgaeMonitorApp:
                     self.status_bar.config(text=msg)
                     print(msg)
                 else:
+                    self._save_last_uploaded_ts(ts)
                     self.status_bar.config(text=f"雲端同步成功: {datetime.now().strftime('%H:%M:%S')}")
             except Exception as e:
                 msg = f"雲端錯誤: {str(e)[:60]}"
                 self.status_bar.config(text=msg)
                 print(f"網路連線錯誤: {e}")
-                
+
         threading.Thread(target=task, daemon=True).start()
+
+    # ---- 斷點補傳機制 ----
+
+    def _read_last_uploaded_ts(self):
+        """讀上次成功上傳的時間戳;沒檔就回空字串"""
+        try:
+            with open(LAST_UPLOADED_FILE) as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return ""
+        except Exception as e:
+            print(f"讀 last_uploaded_ts 失敗: {e}")
+            return ""
+
+    def _save_last_uploaded_ts(self, ts):
+        """寫 last_uploaded_ts。只有新值比舊值大才寫(避免回頭),thread-safe"""
+        if not ts:
+            return
+        with self._ts_lock:
+            current = self._read_last_uploaded_ts()
+            if not current or ts > current:
+                try:
+                    with open(LAST_UPLOADED_FILE, "w") as f:
+                        f.write(ts)
+                except Exception as e:
+                    print(f"寫 last_uploaded_ts 失敗: {e}")
+
+    def _on_cloud_sync_changed(self, *args):
+        """checkbox 變動 callback。OFF→ON 啟動補傳 thread。"""
+        if self.cloud_sync.get() and not self._backfill_running:
+            self._backfill_running = True
+            threading.Thread(target=self._backfill_to_cloud, daemon=True).start()
+
+    def _backfill_to_cloud(self):
+        """掃 CSV,把 last_uploaded_ts 之後的列補傳到 Sheet,然後即時模式接手"""
+        try:
+            if not CLOUD_URL:
+                self.status_bar.config(text="補傳跳過:沒設 cloud_url.txt")
+                return
+            last_ts = self._read_last_uploaded_ts()
+            # 掃 CSV
+            rows_to_send = []
+            try:
+                with open(CSV_FILE, encoding='utf-8-sig') as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  # skip header
+                    for row in reader:
+                        if not row or len(row) < 11:
+                            continue
+                        row_ts = row[0]
+                        if not last_ts or row_ts > last_ts:
+                            rows_to_send.append(row)
+            except FileNotFoundError:
+                self.status_bar.config(text="補傳跳過:CSV 不存在")
+                return
+
+            if not rows_to_send:
+                self.status_bar.config(text="無待補傳資料,即時模式")
+                return
+
+            total = len(rows_to_send)
+            self.status_bar.config(text=f"開始補傳 {total} 筆…")
+            sent = 0
+            for row in rows_to_send:
+                # 中途取消 → 停下,下次再勾從上次成功點繼續
+                if not self.cloud_sync.get():
+                    self.status_bar.config(text=f"補傳中斷:{sent}/{total}")
+                    return
+                payload = self._csv_row_to_payload(row)
+                if not payload:
+                    continue
+                try:
+                    resp = requests.post(CLOUD_URL, json=payload, timeout=10)
+                    if resp.status_code == 200:
+                        sent += 1
+                        self._save_last_uploaded_ts(row[0])
+                        if sent % 5 == 0 or sent == total:
+                            self.status_bar.config(text=f"補傳中:{sent}/{total}")
+                    else:
+                        self.status_bar.config(text=f"補傳暫停:HTTP {resp.status_code} ({sent}/{total})")
+                        return
+                except Exception as e:
+                    self.status_bar.config(text=f"補傳暫停:{str(e)[:40]} ({sent}/{total})")
+                    return
+            self.status_bar.config(text=f"補傳完成 {sent}/{total},即時模式")
+        finally:
+            self._backfill_running = False
+
+    def _csv_row_to_payload(self, row):
+        """CSV 列 → Apps Script payload(欄位順序對應 setup_ui 的 header)"""
+        # CSV: [0]時間 [1]裝置 [2]t [3]ph [4]tds [5]tdse [6]ec [7]turb [8]lux [9]c2b [10]c2c
+        try:
+            return {
+                "ts": row[0],
+                "device_id": row[1],
+                "temp": self._cast_num(row[2]),
+                "ph": self._cast_num(row[3]),
+                "tds": self._cast_num(row[4]),
+                "tdse": self._cast_num(row[5]),
+                "ec": self._cast_num(row[6]),
+                "turb": self._cast_num(row[7]),
+                "lux": self._cast_num(row[8]),
+                "c2b": self._cast_num(row[9]),
+                "c2c": self._cast_num(row[10]),
+            }
+        except IndexError:
+            return None
+
+    def _cast_num(self, v):
+        """CSV 讀進來是字串,盡量轉成數值"""
+        if v is None or v == '':
+            return None
+        try:
+            f = float(v)
+            return int(f) if f.is_integer() else f
+        except (ValueError, TypeError):
+            return v
 
     def handle_serial(self, port):
         try:
@@ -192,7 +321,7 @@ class AlgaeMonitorApp:
                                 self.data_vars[key].set(f"{val}")
 
                         self.save_to_buffer(ts, device_id, final_data)
-                        self.sync_to_cloud(device_id, final_data)
+                        self.sync_to_cloud(device_id, final_data, ts)
                         self.status_bar.config(text=f"成功接收來自 {device_id} 的數據")
                         
                     except Exception as e:

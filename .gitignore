@@ -7,6 +7,11 @@ __pycache__/
 analysis/config.py
 analysis/.streamlit/secrets.toml
 
+# Pi 端環境變數(API key 等),只允許範本進 git
+aquamind_config.env
+setup/aquamind_config.env
+!setup/aquamind_config.env.example
+
 # 系統檔
 .DS_Store
 Thumbs.db

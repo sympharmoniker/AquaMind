@@ -22,9 +22,9 @@ from datetime import datetime
 from email_helper import send_email, is_configured as email_configured
 
 # 要監看的程式(ps 關鍵字 → 顯示名稱)
+# slicer 已停用(使用者決定不再跑),只監看 GUI
 WATCHED = {
     "rpi_gui_monitor.py": "🖥  主程式 GUI(rpi_gui_monitor.py)",
-    "rpi_data_slicer.py": "📂 12 小時分檔(rpi_data_slicer.py)",
 }
 
 # 已通報的死亡狀態存這裡,避免每 10 分鐘狂寄
