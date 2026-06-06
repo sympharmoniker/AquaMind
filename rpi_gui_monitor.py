@@ -155,6 +155,8 @@ class AlgaeMonitorApp:
                     "c2b": values_dict.get('c2b'),
                     "c2c": values_dict.get('c2c')
                 }
+                # DEBUG:印實際送出 payload,可從 ~/gui.log 看到
+                print(f"[LIVE  ] POST ts={payload['ts']!r} device={device_id}", flush=True)
                 response = requests.post(CLOUD_URL, json=payload, timeout=5)
                 if response.status_code != 200:
                     msg = f"雲端同步失敗: HTTP {response.status_code}"
@@ -240,6 +242,8 @@ class AlgaeMonitorApp:
                 payload = self._csv_row_to_payload(row)
                 if not payload:
                     continue
+                # DEBUG:印補傳實際送出的 ts
+                print(f"[BACK  ] POST ts={payload.get('ts')!r} row[0]={row[0]!r}", flush=True)
                 try:
                     resp = requests.post(CLOUD_URL, json=payload, timeout=10)
                     if resp.status_code == 200:
