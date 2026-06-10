@@ -292,51 +292,81 @@ class AlgaeMonitorApp:
             return v
 
     def handle_serial(self, port):
-        try:
-            ser = serial.Serial(port, BAUD_RATE, timeout=1)
-            self.status_bar.config(text=f"已連接: {port}")
-            while True:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore').strip()
-                    if not line: continue
-                    
-                    try:
-                        data = json.loads(line)
-                        v = data.get("v", {})
-                        device_id = data.get("id", "Unknown")
-                        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        # 三種「無資料」代碼:-1 真斷線、-2 使用者關閉、-3 韌體沒送
-                        # 下游 monitor_email 只對 -1 發警告,-2/-3 不發
-                        final_data = {}
-                        for key in self.sensor_keys:
-                            val = v.get(key)
-                            if not self.status[key].get():
-                                final_data[key] = -2
-                                self.data_vars[key].set("已關閉")
-                            elif val is None:
-                                final_data[key] = -3
-                                self.data_vars[key].set("⚠ 未送")
-                            elif val == -1:
-                                final_data[key] = -1
-                                self.data_vars[key].set("⚠ 未接")
-                            else:
-                                final_data[key] = val
-                                self.data_vars[key].set(f"{val}")
+        """讀序列。USB 斷線/Pi undervoltage 把序列踢掉 → 自動重掃 + 重連,不再卡死。"""
+        while True:
+            ser = None
+            try:
+                # 重新掃描可用 port(USB 重連後名稱可能變,例如 ACM0 → ACM1)
+                available = [p.device for p in serial.tools.list_ports.comports()
+                             if 'USB' in p.description or 'ACM' in p.device]
+                if port not in available:
+                    if available:
+                        new_port = available[0]
+                        print(f"[serial] {port} 不在了,改用 {new_port}", flush=True)
+                        port = new_port
+                    else:
+                        # 完全沒裝置 → 10 秒後再掃
+                        self.status_bar.config(text=f"找不到 USB 裝置,10 秒後重試")
+                        time.sleep(10)
+                        continue
 
-                        self.save_to_buffer(ts, device_id, final_data)
-                        self.sync_to_cloud(device_id, final_data, ts)
-                        self.status_bar.config(text=f"成功接收來自 {device_id} 的數據")
-                        
-                    except Exception as e:
-                        print(f"解析錯誤: {e}")
-        except Exception as e:
-            self.status_bar.config(text=f"錯誤: {port} 已斷開")
+                ser = serial.Serial(port, BAUD_RATE, timeout=1)
+                self.status_bar.config(text=f"已連接: {port}")
+                print(f"[serial] 連上 {port}", flush=True)
+
+                while True:
+                    if ser.in_waiting > 0:
+                        line = ser.readline().decode('utf-8', errors='ignore').strip()
+                        if not line: continue
+
+                        try:
+                            data = json.loads(line)
+                            v = data.get("v", {})
+                            device_id = data.get("id", "Unknown")
+                            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                            # 三種「無資料」代碼:-1 真斷線、-2 使用者關閉、-3 韌體沒送
+                            final_data = {}
+                            for key in self.sensor_keys:
+                                val = v.get(key)
+                                if not self.status[key].get():
+                                    final_data[key] = -2
+                                    self.data_vars[key].set("已關閉")
+                                elif val is None:
+                                    final_data[key] = -3
+                                    self.data_vars[key].set("⚠ 未送")
+                                elif val == -1:
+                                    final_data[key] = -1
+                                    self.data_vars[key].set("⚠ 未接")
+                                else:
+                                    final_data[key] = val
+                                    self.data_vars[key].set(f"{val}")
+
+                            self.save_to_buffer(ts, device_id, final_data)
+                            self.sync_to_cloud(device_id, final_data, ts)
+                            self.status_bar.config(text=f"成功接收來自 {device_id} 的數據")
+
+                        except Exception as e:
+                            print(f"解析錯誤: {e}", flush=True)
+            except Exception as e:
+                # USB 斷、Arduino 重啟、undervoltage 把 ser 踢掉 → 都會跑來這
+                print(f"[serial] {port} 出錯: {type(e).__name__}: {e},10 秒後重連", flush=True)
+                self.status_bar.config(text=f"序列斷線:{port} (10秒後重連)")
+                try:
+                    if ser is not None:
+                        ser.close()
+                except Exception:
+                    pass
+                time.sleep(10)
+                # 回到外層 while,重掃 + 重連
 
     def start_serial_threads(self):
         ports = [p.device for p in serial.tools.list_ports.comports() if 'USB' in p.description or 'ACM' in p.device]
         if not ports:
-            messagebox.showwarning("警告", "找不到任何 USB 裝置！請檢查連線。")
+            # 沒抓到 USB → 不要彈 modal 卡住(無人值守會死),起一條 thread 進 handle_serial 自己輪詢等候
+            print("[startup] 暫無 USB,啟動 polling thread 等候裝置出現", flush=True)
+            self.status_bar.config(text="等候 USB 裝置出現...")
+            threading.Thread(target=self.handle_serial, args=("(掃描中)",), daemon=True).start()
             return
         for port in ports:
             threading.Thread(target=self.handle_serial, args=(port,), daemon=True).start()
