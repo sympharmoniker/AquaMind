@@ -33,22 +33,37 @@ else
     echo "[!] ~/AquaMind/rpi_gui_monitor.py 不存在,跳過版本同步(請先 git pull)"
 fi
 
-# 1. wrapper:crash 自動重啟迴圈
+# 1. wrapper:crash 自動重啟迴圈,但「使用者按 X」會乖乖退出
 WRAPPER="$HOME/Desktop/run_gui.sh"
 cat > "$WRAPPER" <<'WRAP_EOF'
 #!/bin/bash
-# rpi_gui_monitor.py 重啟迴圈 — crash 後 30 秒自動重起
+# rpi_gui_monitor.py 重啟迴圈
+#   - crash / USB 斷線 / 訊號異常 → 30 秒自動重起
+#   - 使用者按右上角 X → 寫 ~/.gui_user_closed 旗標 → wrapper exit 不再重起
 # 安裝來源:~/AquaMind/setup/install_resilience.sh
 cd "$HOME/Desktop"
 LOG="$HOME/gui.log"
+MARKER="$HOME/.gui_user_closed"
 export DISPLAY="${DISPLAY:-:0}"
 export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 
+# wrapper 一啟動就清掉舊旗標(避免上次的關閉狀態誤判)
+rm -f "$MARKER"
+
 while true; do
+  rm -f "$MARKER"  # 每次啟動前再清一次,確保乾淨
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 啟動 rpi_gui_monitor.py (DISPLAY=$DISPLAY)" >> "$LOG"
   /usr/bin/python3 "$HOME/Desktop/rpi_gui_monitor.py" >> "$LOG" 2>&1
   RC=$?
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 程式結束 (exit=$RC),30 秒後重啟" >> "$LOG"
+
+  # 使用者主動關閉 → wrapper 也跟著退,不再重啟
+  if [ -f "$MARKER" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 使用者按 X 關閉,wrapper 一併退出" >> "$LOG"
+    rm -f "$MARKER"
+    exit 0
+  fi
+
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 程式異常結束 (exit=$RC),30 秒後重啟" >> "$LOG"
   sleep 30
 done
 WRAP_EOF

@@ -33,6 +33,8 @@ class AlgaeMonitorApp:
         self.root = root
         self.root.title("藻類比賽 - 數據監測儀表板 (SD卡保護版)")
         self.root.geometry("800x600")
+        # 攔截右上角 X:寫旗標檔讓 wrapper 知道是「使用者主動關」,不要再重啟
+        self.root.protocol("WM_DELETE_WINDOW", self._on_user_close)
         
         # 感測器狀態、標籤與單位
         self.sensor_keys = ["t", "ph", "tds", "tdse", "ec", "turb", "lux", "c2b", "c2c"]
@@ -290,6 +292,17 @@ class AlgaeMonitorApp:
             return int(f) if f.is_integer() else f
         except (ValueError, TypeError):
             return v
+
+    def _on_user_close(self):
+        """使用者按右上角 X → 寫旗標檔讓 wrapper 知道別重啟,然後正常結束"""
+        marker = os.path.expanduser("~/.gui_user_closed")
+        try:
+            with open(marker, "w") as f:
+                f.write("closed by user via WM_DELETE_WINDOW")
+        except Exception as e:
+            print(f"寫使用者關閉旗標失敗: {e}", flush=True)
+        print("[user] 視窗被使用者主動關閉,wrapper 不會再重啟", flush=True)
+        self.root.destroy()
 
     def handle_serial(self, port):
         """讀序列。USB 斷線/Pi undervoltage 把序列踢掉 → 自動重掃 + 重連,不再卡死。"""
