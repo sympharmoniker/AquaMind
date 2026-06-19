@@ -244,7 +244,8 @@ class SettingsDialog:
         self.smtp_pass_entry = tk.Entry(email_frame, width=80, show='*')
         self.smtp_pass_entry.insert(0, self.smtp_pass)
         self.smtp_pass_entry.pack(fill="x", pady=2)
-        tk.Label(email_frame, text="收件 Email:", anchor="w").pack(fill="x")
+        tk.Label(email_frame, text="收件 Email(多人時用逗號分隔,例如 a@x.com, b@y.com):",
+                 anchor="w").pack(fill="x")
         self.smtp_to_entry = tk.Entry(email_frame, width=80)
         self.smtp_to_entry.insert(0, self.smtp_to)
         self.smtp_to_entry.pack(fill="x", pady=2)
