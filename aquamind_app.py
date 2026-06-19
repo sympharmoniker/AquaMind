@@ -25,6 +25,7 @@ import serial.tools.list_ports
 import json
 import csv
 import os
+import sys
 import threading
 from datetime import datetime
 import time
@@ -36,6 +37,79 @@ CSV_FILE = os.path.join(DESKTOP_PATH, "algae_monitor_data.csv")
 LAST_UPLOADED_FILE = os.path.join(DESKTOP_PATH, ".last_uploaded_ts")
 CLOUD_URL_FILE = os.path.join(DESKTOP_PATH, "cloud_url.txt")
 CONFIG_ENV_FILE = os.path.expanduser("~/aquamind_config.env")
+
+# --- 自動啟動 + crash 自動重啟 相關 ---
+WRAPPER_FILE = os.path.join(DESKTOP_PATH, "run_gui.sh")
+AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
+AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "aquamind-gui.desktop")
+
+WRAPPER_TEMPLATE = """#!/bin/bash
+# AquaMind 重啟迴圈 — 由 aquamind_app.py 設定選單寫入
+#   - crash / USB 斷線 → 30 秒自動重起
+#   - 使用者按右上角 X → 寫 ~/.gui_user_closed 旗標 → wrapper exit 不再重起
+cd "$HOME/Desktop"
+LOG="$HOME/gui.log"
+MARKER="$HOME/.gui_user_closed"
+APP_PATH="__APP_PATH__"
+PYTHON_BIN="__PYTHON_BIN__"
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+rm -f "$MARKER"
+while true; do
+  rm -f "$MARKER"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 啟動 $(basename $APP_PATH) (DISPLAY=$DISPLAY)" >> "$LOG"
+  $PYTHON_BIN "$APP_PATH" >> "$LOG" 2>&1
+  RC=$?
+  if [ -f "$MARKER" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 使用者按 X 關閉,wrapper 一併退出" >> "$LOG"
+    rm -f "$MARKER"
+    exit 0
+  fi
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 程式異常結束 (exit=$RC),30 秒後重啟" >> "$LOG"
+  sleep 30
+done
+"""
+
+AUTOSTART_TEMPLATE = """[Desktop Entry]
+Type=Application
+Name=AquaMind GUI Monitor
+Comment=自動啟動 AquaMind,crash 後 30 秒重啟
+Exec=__WRAPPER_PATH__
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+Terminal=false
+"""
+
+
+def is_autostart_enabled():
+    """看 autostart + wrapper 兩個檔在不在"""
+    return os.path.exists(AUTOSTART_FILE) and os.path.exists(WRAPPER_FILE)
+
+
+def enable_autostart():
+    """寫 wrapper script + autostart .desktop。使用當前 Python 跟當前主程式路徑。"""
+    python_bin = sys.executable
+    app_path = os.path.abspath(sys.argv[0]) if sys.argv else os.path.abspath(__file__)
+
+    wrapper_content = WRAPPER_TEMPLATE.replace("__APP_PATH__", app_path).replace("__PYTHON_BIN__", python_bin)
+    with open(WRAPPER_FILE, "w") as f:
+        f.write(wrapper_content)
+    os.chmod(WRAPPER_FILE, 0o755)
+
+    os.makedirs(AUTOSTART_DIR, exist_ok=True)
+    autostart_content = AUTOSTART_TEMPLATE.replace("__WRAPPER_PATH__", WRAPPER_FILE)
+    with open(AUTOSTART_FILE, "w") as f:
+        f.write(autostart_content)
+
+
+def disable_autostart():
+    """移除兩個檔(allow not exist)"""
+    for path in (WRAPPER_FILE, AUTOSTART_FILE):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 # --- 序列 / 緩衝 ---
 BAUD_RATE = 9600
@@ -257,6 +331,8 @@ class AquaMindApp:
     def _build_ui(self):
         # 選單列
         menubar = tk.Menu(self.root)
+
+        # 設定
         settings_menu = tk.Menu(menubar, tearoff=0)
         settings_menu.add_command(label="設定 (URL / API key / Email)…",
                                    command=self._open_settings)
@@ -264,6 +340,19 @@ class AquaMindApp:
         settings_menu.add_command(label="關於 AquaMind", command=self._show_about)
         settings_menu.add_command(label="離開", command=self._on_user_close)
         menubar.add_cascade(label="設定", menu=settings_menu)
+
+        # 啟動 — autostart + 自動重啟 切換
+        startup_menu = tk.Menu(menubar, tearoff=0)
+        self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
+        startup_menu.add_checkbutton(
+            label="開機自動啟動 + crash 自動重啟",
+            variable=self.autostart_var,
+            command=self._toggle_autostart,
+        )
+        startup_menu.add_separator()
+        startup_menu.add_command(label="說明 (自動啟動行為)", command=self._show_autostart_help)
+        menubar.add_cascade(label="啟動", menu=startup_menu)
+
         self.root.config(menu=menubar)
 
         # 標題
@@ -332,6 +421,55 @@ class AquaMindApp:
             f"  Cloud URL:{CLOUD_URL_FILE}\n"
             f"  Env:      {CONFIG_ENV_FILE}\n\n"
             "所有私密資料只儲存在本機,絕不會上傳第三方。")
+
+    def _toggle_autostart(self):
+        """切換自動啟動 + crash 自動重啟。沒有破壞性 — 純檔案寫/刪。"""
+        try:
+            if self.autostart_var.get():
+                enable_autostart()
+                self.status_bar.config(
+                    text=f"已啟用「開機自動啟動 + crash 自動重啟」"
+                         f"(下次開機 + 桌面登入後生效)"
+                )
+                messagebox.showinfo(
+                    "已啟用自動啟動",
+                    "已寫入兩個檔:\n"
+                    f"  • {WRAPPER_FILE}\n"
+                    f"  • {AUTOSTART_FILE}\n\n"
+                    "之後行為:\n"
+                    "  • 開機 + 自動登入桌面 → 本程式自動跑\n"
+                    "  • 程式 crash / USB 斷線 → 30 秒自動重起\n"
+                    "  • 你按右上角 X → wrapper 一併退出,不會無限重啟\n\n"
+                    "立刻生效需重登桌面或重開機,目前 process 不受影響。"
+                )
+            else:
+                disable_autostart()
+                self.status_bar.config(text="已停用自動啟動")
+                messagebox.showinfo(
+                    "已停用自動啟動",
+                    "已刪除兩個檔:\n"
+                    f"  • {WRAPPER_FILE}\n"
+                    f"  • {AUTOSTART_FILE}\n\n"
+                    "之後行為:\n"
+                    "  • 開機後不會自動跑(要手動雙擊 aquamind_app.py 或 SSH 啟動)\n"
+                    "  • 程式 crash 後也不會自動重啟"
+                )
+        except Exception as e:
+            # 萬一檔案寫不進去,還原 checkbox 狀態
+            self.autostart_var.set(is_autostart_enabled())
+            messagebox.showerror("切換失敗", str(e))
+
+    def _show_autostart_help(self):
+        messagebox.showinfo(
+            "自動啟動行為說明",
+            "啟用後,Pi / Jetson 上會寫兩個檔:\n\n"
+            f"  1. {WRAPPER_FILE}\n"
+            "      bash 重啟迴圈 — crash 後 30 秒自動拉新的\n\n"
+            f"  2. {AUTOSTART_FILE}\n"
+            "      標準 XDG autostart — 桌面登入時自動跑 wrapper\n\n"
+            "兩個檔的位置都在使用者家目錄,不會影響系統其他東西。\n"
+            "隨時可以取消勾選還原成手動模式。"
+        )
 
     def _on_user_close(self):
         marker = os.path.expanduser("~/.gui_user_closed")
