@@ -180,7 +180,7 @@ class SettingsDialog:
         self.on_save = on_save
         self.top = tk.Toplevel(parent)
         self.top.title("AquaMind 設定")
-        self.top.geometry("640x560")
+        self.top.geometry("640x600")
         self.top.transient(parent)
         self.top.grab_set()
 
@@ -192,7 +192,39 @@ class SettingsDialog:
         self.smtp_pass = env.get("SMTP_PASSWORD", "")
         self.smtp_to = env.get("SMTP_TO", "")
 
+        # 「未儲存」追蹤
+        self._dirty = False
+        self.top.protocol("WM_DELETE_WINDOW", self._on_close_request)
+
         self._build_ui()
+
+        # 所有輸入框打字就標記未儲存
+        for entry in (self.cloud_url_entry, self.gemini_entry,
+                      self.smtp_user_entry, self.smtp_pass_entry, self.smtp_to_entry):
+            entry.bind('<KeyRelease>', self._mark_dirty)
+
+    def _mark_dirty(self, *args):
+        self._dirty = True
+
+    def _on_close_request(self):
+        """按 X 關閉時,若有未儲存變更先問。"""
+        if not self._dirty:
+            self.top.destroy()
+            return
+        ans = messagebox.askyesnocancel(
+            "尚未儲存",
+            "你剛才打的內容**還沒儲存**。\n\n"
+            "  • 「是」:現在儲存後關閉\n"
+            "  • 「否」:不儲存直接丟掉\n"
+            "  • 「取消」:回到設定視窗繼續編輯",
+            parent=self.top,
+        )
+        if ans is None:
+            return                  # Cancel:留在視窗
+        if ans:
+            self.save()             # 儲存(會自己關閉)
+        else:
+            self.top.destroy()      # 丟掉
 
     def _build_ui(self):
         main = tk.Frame(self.top, padx=18, pady=15)
@@ -251,11 +283,15 @@ class SettingsDialog:
         self.smtp_to_entry.pack(fill="x", pady=2)
 
         # === 按鈕 ===
+        # 提醒:必須按「儲存」才會寫入磁碟
+        tk.Label(main, text="⚠️ 改完一定要按下面綠色「儲存」按鈕,直接關閉視窗會丟掉變更",
+                 fg="darkred", font=("Arial", 10, "bold")).pack(anchor="w", pady=(5, 0))
+
         btn_frame = tk.Frame(main)
-        btn_frame.pack(fill="x", pady=15)
-        tk.Button(btn_frame, text="儲存", command=self.save,
-                  width=12, bg="#2e8b57", fg="white", font=("Arial", 11, "bold")).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="取消", command=self.top.destroy, width=12).pack(side="left", padx=5)
+        btn_frame.pack(fill="x", pady=10)
+        tk.Button(btn_frame, text="💾 儲存", command=self.save,
+                  width=14, bg="#2e8b57", fg="white", font=("Arial", 12, "bold")).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="取消", command=self._on_close_request, width=12).pack(side="left", padx=5)
         self.result_var = tk.StringVar(value="")
         tk.Label(btn_frame, textvariable=self.result_var, fg="green",
                  font=("Arial", 10)).pack(side="left", padx=15)
@@ -274,10 +310,11 @@ class SettingsDialog:
                 "SMTP_TO": self.smtp_to_entry.get().strip(),
             }
             save_env_file(CONFIG_ENV_FILE, env)
-            self.result_var.set("✓ 已儲存,3 秒後自動關閉")
+            self._dirty = False                  # 已儲存,清除未儲存標記
+            self.result_var.set("✓ 已儲存,2 秒後自動關閉")
             if self.on_save:
                 self.on_save()
-            self.top.after(3000, self.top.destroy)
+            self.top.after(2000, self.top.destroy)
         except Exception as e:
             messagebox.showerror("儲存失敗", str(e))
 
