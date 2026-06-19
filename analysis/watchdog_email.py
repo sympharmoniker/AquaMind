@@ -22,9 +22,10 @@ from datetime import datetime
 from email_helper import send_email, is_configured as email_configured
 
 # 要監看的程式(ps 關鍵字 → 顯示名稱)
-# slicer 已停用(使用者決定不再跑),只監看 GUI
+# pgrep -f 會抓 cmdline 含關鍵字的任何 process,所以新版 aquamind_app.py 跟舊版
+# rpi_gui_monitor.py 任一個在跑就算「活著」(交接期間可能新舊並存)
 WATCHED = {
-    "rpi_gui_monitor.py": "🖥  主程式 GUI(rpi_gui_monitor.py)",
+    "aquamind_app.py|rpi_gui_monitor.py": "🖥  AquaMind 主程式 GUI",
 }
 
 # 已通報的死亡狀態存這裡,避免每 10 分鐘狂寄

@@ -12,10 +12,16 @@
 
 set -e
 
-if [ ! -f "$HOME/Desktop/rpi_gui_monitor.py" ]; then
-    echo "❌ 找不到 ~/Desktop/rpi_gui_monitor.py — 請確認你在對的機器上、檔案在桌面"
+# 偵測要跑哪個主程式:優先用 aquamind_app.py(整合版),沒有才回退舊 rpi_gui_monitor.py
+if [ -f "$HOME/Desktop/aquamind_app.py" ]; then
+    APP_FILE="aquamind_app.py"
+elif [ -f "$HOME/Desktop/rpi_gui_monitor.py" ]; then
+    APP_FILE="rpi_gui_monitor.py"
+else
+    echo "❌ 桌面找不到 aquamind_app.py 或 rpi_gui_monitor.py — 請先 cp 過去"
     exit 1
 fi
+echo "[OK] 將以 ~/Desktop/$APP_FILE 為主程式"
 
 # 自動找有 tkinter 的最新 Python(Pi 通常 python3 就行,Jetson Nano 2GB 要 python3.8)
 detect_python() {
@@ -37,33 +43,34 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 echo "[OK] 偵測 Python: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
-# 0. 把 git repo 裡的新版 rpi_gui_monitor.py 同步到桌面(含斷點補傳)
-REPO_GUI="$HOME/AquaMind/rpi_gui_monitor.py"
-DESKTOP_GUI="$HOME/Desktop/rpi_gui_monitor.py"
-if [ -f "$REPO_GUI" ]; then
-    if ! cmp -s "$REPO_GUI" "$DESKTOP_GUI"; then
-        BACKUP="$DESKTOP_GUI.before-resilience.bak"
-        cp "$DESKTOP_GUI" "$BACKUP"
-        cp "$REPO_GUI" "$DESKTOP_GUI"
-        echo "[OK] 桌面版 GUI 更新為 git 最新版(舊版備份成 $(basename $BACKUP))"
+# 0. 把 git repo 裡新版的主程式同步到桌面
+REPO_APP="$HOME/AquaMind/$APP_FILE"
+DESKTOP_APP="$HOME/Desktop/$APP_FILE"
+if [ -f "$REPO_APP" ]; then
+    if ! cmp -s "$REPO_APP" "$DESKTOP_APP"; then
+        BACKUP="$DESKTOP_APP.before-resilience.bak"
+        cp "$DESKTOP_APP" "$BACKUP"
+        cp "$REPO_APP" "$DESKTOP_APP"
+        echo "[OK] 桌面 $APP_FILE 更新為 git 最新版(舊版備份成 $(basename $BACKUP))"
     else
-        echo "[OK] 桌面版 GUI 已是最新,跳過 cp"
+        echo "[OK] 桌面 $APP_FILE 已是最新,跳過 cp"
     fi
 else
-    echo "[!] ~/AquaMind/rpi_gui_monitor.py 不存在,跳過版本同步(請先 git pull)"
+    echo "[!] ~/AquaMind/$APP_FILE 不存在,跳過版本同步(請先 git pull)"
 fi
 
 # 1. wrapper:crash 自動重啟迴圈,但「使用者按 X」會乖乖退出
 WRAPPER="$HOME/Desktop/run_gui.sh"
 cat > "$WRAPPER" <<'WRAP_EOF'
 #!/bin/bash
-# rpi_gui_monitor.py 重啟迴圈
+# AquaMind 主程式重啟迴圈
 #   - crash / USB 斷線 / 訊號異常 → 30 秒自動重起
 #   - 使用者按右上角 X → 寫 ~/.gui_user_closed 旗標 → wrapper exit 不再重起
 # 安裝來源:~/AquaMind/setup/install_resilience.sh
 cd "$HOME/Desktop"
 LOG="$HOME/gui.log"
 MARKER="$HOME/.gui_user_closed"
+APP_PATH="$HOME/Desktop/__APP_FILE__"
 export DISPLAY="${DISPLAY:-:0}"
 export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
 
@@ -72,8 +79,8 @@ rm -f "$MARKER"
 
 while true; do
   rm -f "$MARKER"  # 每次啟動前再清一次,確保乾淨
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 啟動 rpi_gui_monitor.py (DISPLAY=$DISPLAY)" >> "$LOG"
-  __PYTHON_BIN__ "$HOME/Desktop/rpi_gui_monitor.py" >> "$LOG" 2>&1
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] 啟動 $(basename $APP_PATH) (DISPLAY=$DISPLAY)" >> "$LOG"
+  __PYTHON_BIN__ "$APP_PATH" >> "$LOG" 2>&1
   RC=$?
 
   # 使用者主動關閉 → wrapper 也跟著退,不再重啟
@@ -87,10 +94,11 @@ while true; do
   sleep 30
 done
 WRAP_EOF
-# 把 wrapper 裡 __PYTHON_BIN__ 換成實際偵測到的 Python 路徑
+# 把 wrapper 裡的 placeholder 換成實際路徑
 sed -i "s|__PYTHON_BIN__|$PYTHON_BIN|g" "$WRAPPER"
+sed -i "s|__APP_FILE__|$APP_FILE|g" "$WRAPPER"
 chmod +x "$WRAPPER"
-echo "[OK] 寫好 wrapper: $WRAPPER (使用 $PYTHON_BIN)"
+echo "[OK] 寫好 wrapper: $WRAPPER ($PYTHON_BIN $APP_FILE)"
 
 # 2. autostart:登入桌面自動跑 wrapper
 mkdir -p "$HOME/.config/autostart"
