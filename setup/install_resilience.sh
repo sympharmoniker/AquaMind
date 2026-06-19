@@ -13,9 +13,29 @@
 set -e
 
 if [ ! -f "$HOME/Desktop/rpi_gui_monitor.py" ]; then
-    echo "❌ 找不到 ~/Desktop/rpi_gui_monitor.py — 請確認你在對的 Pi 上、檔案在桌面"
+    echo "❌ 找不到 ~/Desktop/rpi_gui_monitor.py — 請確認你在對的機器上、檔案在桌面"
     exit 1
 fi
+
+# 自動找有 tkinter 的最新 Python(Pi 通常 python3 就行,Jetson Nano 2GB 要 python3.8)
+detect_python() {
+    for py in python3.11 python3.10 python3.9 python3.8 python3.6 python3; do
+        if command -v "$py" >/dev/null 2>&1; then
+            if "$py" -c "import tkinter" 2>/dev/null; then
+                command -v "$py"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+PYTHON_BIN=$(detect_python)
+if [ -z "$PYTHON_BIN" ]; then
+    echo "❌ 找不到帶 tkinter 的 Python — 請先 sudo apt install python3-tk"
+    exit 1
+fi
+echo "[OK] 偵測 Python: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
 # 0. 把 git repo 裡的新版 rpi_gui_monitor.py 同步到桌面(含斷點補傳)
 REPO_GUI="$HOME/AquaMind/rpi_gui_monitor.py"
@@ -53,7 +73,7 @@ rm -f "$MARKER"
 while true; do
   rm -f "$MARKER"  # 每次啟動前再清一次,確保乾淨
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] 啟動 rpi_gui_monitor.py (DISPLAY=$DISPLAY)" >> "$LOG"
-  /usr/bin/python3 "$HOME/Desktop/rpi_gui_monitor.py" >> "$LOG" 2>&1
+  __PYTHON_BIN__ "$HOME/Desktop/rpi_gui_monitor.py" >> "$LOG" 2>&1
   RC=$?
 
   # 使用者主動關閉 → wrapper 也跟著退,不再重啟
@@ -67,8 +87,10 @@ while true; do
   sleep 30
 done
 WRAP_EOF
+# 把 wrapper 裡 __PYTHON_BIN__ 換成實際偵測到的 Python 路徑
+sed -i "s|__PYTHON_BIN__|$PYTHON_BIN|g" "$WRAPPER"
 chmod +x "$WRAPPER"
-echo "[OK] 寫好 wrapper: $WRAPPER"
+echo "[OK] 寫好 wrapper: $WRAPPER (使用 $PYTHON_BIN)"
 
 # 2. autostart:登入桌面自動跑 wrapper
 mkdir -p "$HOME/.config/autostart"
