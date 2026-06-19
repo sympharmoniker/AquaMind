@@ -181,12 +181,18 @@ class SettingsDialog:
         self.top = tk.Toplevel(parent)
         self.top.title("AquaMind 設定")
         self.top.geometry("640x600")
-        self.top.transient(parent)
-        self.top.grab_set()
+        # 不用 transient + grab_set — 在某些 X 環境(Jetson Nano 2GB GNOME)
+        # 可能會誤觸發主視窗的 WM_DELETE_WINDOW,把整個程式關掉
 
-        # 載入現有值
-        self.cloud_url = load_cloud_url()
-        env = parse_env_file(CONFIG_ENV_FILE)
+        # 載入現有值(用 try 防止 IO 例外炸到主程式)
+        try:
+            self.cloud_url = load_cloud_url()
+        except Exception:
+            self.cloud_url = ""
+        try:
+            env = parse_env_file(CONFIG_ENV_FILE)
+        except Exception:
+            env = {}
         self.gemini_key = env.get("GEMINI_API_KEY", "")
         self.smtp_user = env.get("SMTP_USER", "")
         self.smtp_pass = env.get("SMTP_PASSWORD", "")
@@ -195,33 +201,27 @@ class SettingsDialog:
         self._build_ui()
 
     def _build_ui(self):
+        # 全部用 Tk 內建字型,不寫死 Arial(Jetson 可能沒裝)
         main = tk.Frame(self.top, padx=18, pady=15)
         main.pack(fill="both", expand=True)
 
-        # 標題 + 提示
-        tk.Label(main, text="AquaMind 設定", font=("Arial", 16, "bold")).pack(anchor="w")
-        tk.Label(main, text="所有資料只儲存在本機 ~/Desktop/ 跟 ~/aquamind_config.env,絕不會上傳任何地方",
-                 fg="gray", font=("Arial", 9)).pack(anchor="w", pady=(0, 12))
+        tk.Label(main, text="AquaMind 設定").pack(anchor="w")
+        tk.Label(main,
+                 text="所有資料只儲存在本機 ~/Desktop/ 跟 ~/aquamind_config.env",
+                 fg="gray").pack(anchor="w", pady=(0, 12))
 
         # === 區塊 1:Google Sheets ===
-        cloud_frame = tk.LabelFrame(main, text=" 1. Google Sheets 雲端同步 ",
-                                     font=("Arial", 11, "bold"), padx=10, pady=8)
+        cloud_frame = tk.LabelFrame(main, text=" 1. Google Sheets 雲端同步 ", padx=10, pady=8)
         cloud_frame.pack(fill="x", pady=4)
         tk.Label(cloud_frame, text="Apps Script Web App URL:", anchor="w").pack(fill="x")
-        tk.Label(cloud_frame,
-                 text="從 Google Sheets → 擴充功能 → Apps Script → 部署 → 網頁應用程式 → URL",
-                 fg="gray", font=("Arial", 9)).pack(fill="x")
         self.cloud_url_entry = tk.Entry(cloud_frame, width=80)
         self.cloud_url_entry.insert(0, self.cloud_url)
         self.cloud_url_entry.pack(fill="x", pady=3)
 
         # === 區塊 2:Gemini AI ===
-        ai_frame = tk.LabelFrame(main, text=" 2. Gemini AI(每日分析報告,可選) ",
-                                  font=("Arial", 11, "bold"), padx=10, pady=8)
+        ai_frame = tk.LabelFrame(main, text=" 2. Gemini AI(每日分析報告,可選) ", padx=10, pady=8)
         ai_frame.pack(fill="x", pady=4)
         tk.Label(ai_frame, text="Gemini API Key:", anchor="w").pack(fill="x")
-        tk.Label(ai_frame, text="從 https://aistudio.google.com/apikey 免費申請",
-                 fg="gray", font=("Arial", 9)).pack(fill="x")
         gemini_row = tk.Frame(ai_frame)
         gemini_row.pack(fill="x", pady=3)
         self.gemini_entry = tk.Entry(gemini_row, width=70, show='*')
@@ -232,40 +232,35 @@ class SettingsDialog:
                        command=self._toggle_gemini_visibility).pack(side="left", padx=5)
 
         # === 區塊 3:Email 通知 ===
-        email_frame = tk.LabelFrame(main, text=" 3. Email 通知(程式停止時通報,可選) ",
-                                     font=("Arial", 11, "bold"), padx=10, pady=8)
+        email_frame = tk.LabelFrame(main, text=" 3. Email 通知(程式停止時通報,可選) ", padx=10, pady=8)
         email_frame.pack(fill="x", pady=4)
         tk.Label(email_frame, text="Gmail 寄件地址:", anchor="w").pack(fill="x")
         self.smtp_user_entry = tk.Entry(email_frame, width=80)
         self.smtp_user_entry.insert(0, self.smtp_user)
         self.smtp_user_entry.pack(fill="x", pady=2)
-        tk.Label(email_frame, text="Gmail 應用程式密碼(不是登入密碼,從 Google 帳號 → 安全性 → 應用程式密碼):",
-                 anchor="w").pack(fill="x")
+        tk.Label(email_frame, text="Gmail 應用程式密碼:", anchor="w").pack(fill="x")
         self.smtp_pass_entry = tk.Entry(email_frame, width=80, show='*')
         self.smtp_pass_entry.insert(0, self.smtp_pass)
         self.smtp_pass_entry.pack(fill="x", pady=2)
-        tk.Label(email_frame, text="收件 Email(多人時用逗號分隔,例如 a@x.com, b@y.com):",
-                 anchor="w").pack(fill="x")
+        tk.Label(email_frame, text="收件 Email(多人時用逗號分隔):", anchor="w").pack(fill="x")
         self.smtp_to_entry = tk.Entry(email_frame, width=80)
         self.smtp_to_entry.insert(0, self.smtp_to)
         self.smtp_to_entry.pack(fill="x", pady=2)
 
         # === 右下角:取消 + 儲存 ===
-        tk.Label(main, text="⚠️ 改完請按「儲存」,直接關閉視窗不會自動保存",
-                 fg="darkred", font=("Arial", 10)).pack(anchor="e", pady=(5, 0))
+        tk.Label(main, text="改完請按「儲存」,直接關閉視窗不會自動保存",
+                 fg="darkred").pack(anchor="e", pady=(5, 0))
 
         btn_frame = tk.Frame(main)
         btn_frame.pack(fill="x", pady=10)
-        # side="right" 從右邊往左疊,所以「儲存」最右、「取消」次右
-        tk.Button(btn_frame, text="💾 儲存", command=self.save,
-                  width=14, bg="#2e8b57", fg="white",
-                  font=("Arial", 12, "bold")).pack(side="right", padx=5)
+        # side="right" 從右邊往左疊,儲存最右、取消次右
+        tk.Button(btn_frame, text="儲存", command=self.save,
+                  width=14, bg="#2e8b57", fg="white").pack(side="right", padx=5)
         tk.Button(btn_frame, text="取消", command=self.top.destroy,
                   width=10).pack(side="right", padx=5)
         # 訊息顯示在左邊
         self.result_var = tk.StringVar(value="")
-        tk.Label(btn_frame, textvariable=self.result_var, fg="green",
-                 font=("Arial", 10)).pack(side="left", padx=5)
+        tk.Label(btn_frame, textvariable=self.result_var, fg="green").pack(side="left", padx=5)
 
     def _toggle_gemini_visibility(self):
         self.gemini_entry.config(show='' if self.show_gemini.get() else '*')
@@ -413,7 +408,16 @@ class AquaMindApp:
                 csv.writer(f).writerow(header)
 
     def _open_settings(self):
-        SettingsDialog(self.root, on_save=self._reload_config)
+        try:
+            SettingsDialog(self.root, on_save=self._reload_config)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()  # 印到 stdout / gui.log,看得到
+            try:
+                messagebox.showerror("設定視窗開啟失敗",
+                    f"{type(e).__name__}: {e}\n\n詳細 traceback 在 ~/gui.log")
+            except Exception:
+                pass
 
     def _reload_config(self):
         """設定視窗存檔後呼叫,重新讀取 cloud_url"""
