@@ -1,0 +1,3 @@
+[submodule "cv"]
+	path = cv
+	url = https://github.com/avav10985/algae-cv.git
