@@ -407,9 +407,6 @@ def load_anomaly_model():
         st.error(f"讀取模型失敗: {e}")
         return None
 
-def classify_light_state_dashboard(lux):
-    if pd.isna(lux):
-
 
 def classify_light_state_dashboard(lux):
     if pd.isna(lux):
