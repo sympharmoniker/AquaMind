@@ -396,6 +396,20 @@ LIGHT_OFF_MAX = 50
 LIGHT_ON_MIN = 1500
 MODEL_FILE = Path(__file__).parent / 'anomaly_model.pkl'
 
+@st.cache_resource
+def load_anomaly_model():
+    if not MODEL_FILE.exists():
+        return None
+    try:
+        with open(MODEL_FILE, 'rb') as f:
+            return pickle.load(f)
+    except Exception as e:
+        st.error(f"讀取模型失敗: {e}")
+        return None
+
+def classify_light_state_dashboard(lux):
+    if pd.isna(lux):
+
 
 def classify_light_state_dashboard(lux):
     if pd.isna(lux):
