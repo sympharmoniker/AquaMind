@@ -407,7 +407,6 @@ def load_anomaly_model():
         st.error(f"讀取模型失敗: {e}")
         return None
 
-
 def classify_light_state_dashboard(lux):
     if pd.isna(lux):
         return 'MID'
@@ -417,7 +416,6 @@ def classify_light_state_dashboard(lux):
         return 'ON'
     else:
         return 'MID'
-
 
 def add_light_bands(fig, df_with_state):
     """在 plotly 圖表上加入光照狀態色帶"""
@@ -441,6 +439,7 @@ with tab5:
     st.subheader("🧠 邊緣 AI 異常檢測 + 趨勢分析")
     st.caption("IsolationForest 無監督學習 + 光照感知 — 完全本地運算,無雲端 API 依賴")
 
+    # 必須先呼叫函式取得 artifact，才能拿到模型
     artifact = load_anomaly_model()
     if artifact is None:
         st.warning(f"⚠ 找不到模型檔 `{MODEL_FILE.name}`,請先在開發機跑 `edge_ai.py train ...`")
@@ -448,8 +447,8 @@ with tab5:
 
     model = artifact['model']
     scaler = artifact['scaler']
-    # 過濾出仍存在於 SENSOR_COLS 中的模型特徵欄位
-    cols_model = [c for c in artifact['cols'] if c in SENSOR_COLS]
+    # 直接使用模型訓練時的完整特徵列表，不要過濾
+    cols_model = artifact['cols']
 
     info_cols = st.columns(3)
     info_cols[0].metric("訓練樣本數", f"{artifact.get('n_samples', '?'):,}")
@@ -468,18 +467,27 @@ with tab5:
         st.stop()
 
     # 建立光照狀態
-    view_df['光照(lx)'] = pd.to_numeric(view_df['光照(lx)'], errors='coerce')
-    view_df['light_state'] = view_df['光照(lx)'].apply(classify_light_state_dashboard)
+    if '光照(lx)' in view_df.columns:
+        view_df['光照(lx)'] = pd.to_numeric(view_df['光照(lx)'], errors='coerce')
+        view_df['light_state'] = view_df['光照(lx)'].apply(classify_light_state_dashboard)
+    else:
+        view_df['light_state'] = 'MID'
 
-    # 建構特徵矩陣
-    X = pd.DataFrame()
+    # 建構特徵矩陣，確保即使缺少欄位也不會報錯，並維持形狀一致
+    X = pd.DataFrame(index=view_df.index)
     for c in cols_model:
-        s = pd.to_numeric(view_df[c], errors='coerce')
-        s = s.where(~s.isin(NO_DATA_CODES))
-        X[c] = s
-    X = X.fillna(X.median())
+        if c in view_df.columns:
+            s = pd.to_numeric(view_df[c], errors='coerce')
+            s = s.where(~s.isin(NO_DATA_CODES))
+            X[c] = s
+        else:
+            # 萬一目前的資料表缺少了模型需要的某個特徵，整欄填 NaN
+            X[c] = np.nan
+            
+    # 填補空值 (先用中位數填，如果整欄都是 NaN 中位數會失效，所以最後補 0)
+    X = X.fillna(X.median()).fillna(0)
 
-    # 推論
+    # 推論 (現在 X 的維度絕對跟訓練時一樣了)
     X_scaled = scaler.transform(X.values)
     scores = model.score_samples(X_scaled)
     preds = model.predict(X_scaled)
@@ -511,7 +519,7 @@ with tab5:
     st.plotly_chart(fig2, use_container_width=True)
 
     st.caption(
-        "🎨 **背景色帶說明**:"
+        "🎨 **背景色帶說明**: "
         "🌑 深色=關燈時段、"
         "💡 黃色=開燈時段、"
         "🟥 紅色=感測器離線/故障"
@@ -540,7 +548,7 @@ with tab5:
         st.dataframe(
             detail_df[['感測器', '當下讀值', 'Z-score', '偏差方向']],
             use_container_width=True, hide_index=True)
-        st.caption(f"時間:`{worst_row.name}` · 異常分數:`{scores[worst_idx]:.3f}`")
+        st.caption(f"時間: `{worst_row.name}` · 異常分數: `{scores[worst_idx]:.3f}`")
 
     # 趨勢預測
     st.divider()
@@ -577,5 +585,7 @@ with tab5:
 
 
 # ============ 頁尾 ============
+st.divider()
+st.caption("🌱 海水小球藻監測系統 · 資料每 60 秒從 Google Sheets 自動更新")
 st.divider()
 st.caption("🌱 海水小球藻監測系統 · 資料每 60 秒從 Google Sheets 自動更新")
