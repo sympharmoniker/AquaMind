@@ -550,12 +550,16 @@ with tab5:
             use_container_width=True, hide_index=True)
         st.caption(f"時間: `{worst_row.name}` · 異常分數: `{scores[worst_idx]:.3f}`")
 
-    # 趨勢預測
+# 趨勢預測
     st.divider()
     st.markdown("### 🔮 未來 24 小時趨勢預測")
     st.caption("線性外推 — 簡單邊緣運算,即時可算")
     forecast_rows = []
     for c in cols_model:
+        # 修正：先檢查這個欄位在不在目前的資料表裡，不在就跳過預測
+        if c not in view_df.columns:
+            continue
+            
         s = pd.to_numeric(view_df[c], errors='coerce')
         s = s[~s.isin(NO_DATA_CODES)].dropna()
         if len(s) < 10:
@@ -585,7 +589,5 @@ with tab5:
 
 
 # ============ 頁尾 ============
-st.divider()
-st.caption("🌱 海水小球藻監測系統 · 資料每 60 秒從 Google Sheets 自動更新")
 st.divider()
 st.caption("🌱 海水小球藻監測系統 · 資料每 60 秒從 Google Sheets 自動更新")
