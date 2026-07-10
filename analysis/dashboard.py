@@ -29,7 +29,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-
 # ============ 設定(從 Streamlit secrets 或環境變數讀)============
 def _get_secret(key, default=""):
     """先看 streamlit secrets,再看環境變數"""
@@ -39,7 +38,6 @@ def _get_secret(key, default=""):
     except Exception:
         pass
     return os.environ.get(key, default)
-
 
 SHEET_CSV_URL = _get_secret("GOOGLE_SHEET_CSV_URL")
 GEMINI_API_KEY = _get_secret("GEMINI_API_KEY")
@@ -81,6 +79,120 @@ st.set_page_config(
     layout="wide",
 )
 
+# ============ UI/UX 自訂 CSS 注入 ============
+def inject_custom_css():
+    st.markdown("""
+    <style>
+    /* =========================================
+       1. 全域視覺與主背景 (Global & Main Background)
+       ========================================= */
+    /* 替換主頁面背景為極淺薄荷白 */
+    .stApp {
+        background-color: #F4F9F6;
+    }
+    /* 將預設文字顏色改為藻綠色系 */
+    .stApp p, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp span {
+        color: #0D5C34;
+    }
+
+    /* =========================================
+       2. 側邊欄 (Sidebar)
+       ========================================= */
+    /* 側邊欄背景改為深海洋綠 */
+    [data-testid="stSidebar"] {
+        background-color: #0B251A !important;
+    }
+    /* 強制側邊欄文字為極淺綠/白色 */
+    [data-testid="stSidebar"] p, 
+    [data-testid="stSidebar"] span, 
+    [data-testid="stSidebar"] h1, 
+    [data-testid="stSidebar"] h2, 
+    [data-testid="stSidebar"] h3, 
+    [data-testid="stSidebar"] label {
+        color: #F4F9F6 !important;
+    }
+    /* 側邊欄按鈕 (🔄 重新整理) 綠色發光懸停特效 */
+    [data-testid="stSidebar"] .stButton > button {
+        background-color: transparent !important;
+        border: 1px solid #1EB06A !important;
+        color: #1EB06A !important;
+        border-radius: 12px !important;
+        transition: all 0.3s ease !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background-color: #1EB06A !important;
+        color: #ffffff !important;
+        box-shadow: 0 0 12px rgba(30, 176, 106, 0.6) !important;
+        border: 1px solid #1EB06A !important;
+    }
+
+    /* =========================================
+       3. 標籤頁 (Tabs)
+       ========================================= */
+    /* 未選中時的淡色設定 */
+    div[data-baseweb="tab-list"] button {
+        background-color: transparent !important;
+        color: rgba(13, 92, 52, 0.5) !important;
+        transition: all 0.2s ease-in-out;
+    }
+    /* 選中時底線加粗與深綠色 */
+    div[data-baseweb="tab-list"] button[aria-selected="true"] {
+        color: #0D5C34 !important;
+        font-weight: 800 !important;
+        border-bottom: 4px solid #2E8B57 !important;
+    }
+    /* 選中標籤的底色(移除 Streamlit 預設底線干擾) */
+    div[data-baseweb="tab-highlight"] {
+        background-color: transparent !important; 
+    }
+
+    /* =========================================
+       4. 數據卡片 (Metrics) - 玻璃擬物化與上浮
+       ========================================= */
+    [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.6) !important;
+        backdrop-filter: blur(8px);
+        border-radius: 12px !important;
+        padding: 15px 20px !important;
+        box-shadow: 0 4px 6px rgba(13, 92, 52, 0.05);
+        border: 1px solid rgba(46, 139, 87, 0.1);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    [data-testid="stMetric"]:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 16px rgba(13, 92, 52, 0.12);
+    }
+    /* Metric 標題與數值顏色 */
+    [data-testid="stMetricLabel"] {
+        color: #2E8B57 !important;
+        font-weight: 600;
+    }
+    [data-testid="stMetricValue"] {
+        color: #0D5C34 !important;
+    }
+
+    /* =========================================
+       5. 資料表 (Dataframes / Tables)
+       ========================================= */
+    [data-testid="stDataFrame"] {
+        border-radius: 12px !important;
+        overflow: hidden !important;
+        border: 1px solid rgba(46, 139, 87, 0.2) !important;
+        box-shadow: 0 2px 8px rgba(13, 92, 52, 0.05);
+    }
+    /* 隱藏預設工具列以保持介面乾淨 (可選) */
+    [data-testid="stDataFrameToolbar"] {
+        opacity: 0.2;
+        transition: opacity 0.2s ease;
+    }
+    [data-testid="stDataFrame"]:hover [data-testid="stDataFrameToolbar"] {
+        opacity: 1;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 執行注入 CSS
+inject_custom_css()
 
 # ============ 資料載入(快取 60 秒)============
 @st.cache_data(ttl=60)
@@ -261,6 +373,11 @@ with tab1:
             height=500,
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor='rgba(0, 0, 0, 0)',  
+            plot_bgcolor='rgba(255, 255, 255, 0.4)',  
+            font=dict(color='#0D5C34'),
+            xaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)'),
+            yaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)')
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -295,7 +412,16 @@ with tab2:
                               annotation_text=f"下限 {lo}")
                 fig.add_hline(y=hi, line_dash="dash", line_color="red",
                               annotation_text=f"上限 {hi}")
-            fig.update_layout(height=300, showlegend=False)
+            
+            # 加入透明背景設計
+            fig.update_layout(
+                height=300, showlegend=False,
+                paper_bgcolor='rgba(0, 0, 0, 0)',
+                plot_bgcolor='rgba(255, 255, 255, 0.4)',
+                font=dict(color='#0D5C34'),
+                xaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)'),
+                yaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)')
+            )
             st.plotly_chart(fig, use_container_width=True)
 
         with st.expander("📋 統計表"):
@@ -420,18 +546,21 @@ def classify_light_state_dashboard(lux):
 def add_light_bands(fig, df_with_state):
     """在 plotly 圖表上加入光照狀態色帶"""
     states = df_with_state['light_state'].fillna('MID')
-    state_color = {'OFF': 'rgba(50,50,80,0.18)', 'ON': 'rgba(250,210,80,0.12)',
-                   'MID': 'rgba(220,80,80,0.18)'}
+    state_color = {
+        'OFF': 'rgba(234, 235, 242, 0.5)', # 夜幕藍 (關燈)
+        'ON': 'rgba(253, 246, 226, 0.5)',  # 柔和黃 (開燈)
+        'MID': 'rgba(253, 234, 234, 0.5)'  # 淡紅 (故障/中界)
+    }
     prev_state = states.iloc[0]
     seg_start = df_with_state.index[0]
     for ts, s in zip(df_with_state.index[1:], states.iloc[1:]):
         if s != prev_state:
             fig.add_vrect(x0=seg_start, x1=ts, fillcolor=state_color[prev_state],
-                          opacity=0.6, layer='below', line_width=0)
+                          opacity=0.8, layer='below', line_width=0)
             seg_start = ts
             prev_state = s
     fig.add_vrect(x0=seg_start, x1=df_with_state.index[-1],
-                  fillcolor=state_color[prev_state], opacity=0.6, layer='below', line_width=0)
+                  fillcolor=state_color[prev_state], opacity=0.8, layer='below', line_width=0)
     return fig
 
 
@@ -513,8 +642,18 @@ with tab5:
         name='異常分數', mode='lines', line=dict(color='crimson', width=1.5)))
     fig2.add_hline(y=-0.5, line_dash='dash', line_color='red',
                    annotation_text='異常閾值', annotation_position='right')
-    fig2.update_layout(height=300, margin=dict(t=20, b=10),
-                       xaxis_title='時間', yaxis_title='分數(越低越異常)')
+    
+    # 圖表透明化修改
+    fig2.update_layout(
+        height=300, margin=dict(t=20, b=10),
+        xaxis_title='時間', yaxis_title='分數(越低越異常)',
+        paper_bgcolor='rgba(0, 0, 0, 0)',
+        plot_bgcolor='rgba(255, 255, 255, 0.4)',
+        font=dict(color='#0D5C34'),
+        xaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)'),
+        yaxis=dict(gridcolor='rgba(46, 139, 87, 0.1)')
+    )
+    
     fig2 = add_light_bands(fig2, view_df)
     st.plotly_chart(fig2, use_container_width=True)
 
@@ -550,7 +689,7 @@ with tab5:
             use_container_width=True, hide_index=True)
         st.caption(f"時間: `{worst_row.name}` · 異常分數: `{scores[worst_idx]:.3f}`")
 
-# 趨勢預測
+    # 趨勢預測
     st.divider()
     st.markdown("### 🔮 未來 24 小時趨勢預測")
     st.caption("線性外推 — 簡單邊緣運算,即時可算")
